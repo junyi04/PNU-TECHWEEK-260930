@@ -1,0 +1,238 @@
+"""Visit two visually observed red targets and return; no world-file access.
+
+Arrival thresholds are MVP choices, not official competition scoring rules.
+"""
+import math
+import numpy as np
+from navigation import astar, wrap
+
+
+class Mission:
+    def __init__(self, navigator):
+        self.nav = navigator
+        self.state = 'IDLE'
+        self.reason = 'ready'
+        self.visited = []
+        self.active = None
+        self.deferred = {}
+        self.attempts = {}
+        self.scanned = []
+        self.scan_angle = 0.
+        self.scan_heading = 0.
+        self.since = 0.
+        self.started = None
+        self.verify_frames = []
+        self.exhaustions = 0
+        self.terminal_reason = None
+        self.last_selection = -100.
+        self.vision_wait_since = None
+
+    def pause(self, now):
+        self.state, self.reason = 'PAUSED', 'operator_pause'
+        self.nav.set_mode('MANUAL', now)
+
+    def start(self, now):
+        if self.started is None:
+            self.started = now
+        if len(self.visited) >= 2:
+            self.return_home(now, 'two_targets_visited')
+        else:
+            self.begin_scan(now)
+
+    def return_home(self, now, reason):
+        self.state, self.reason = 'RETURN', reason
+        self.terminal_reason = reason
+        self.nav.set_mode('RETURN', now)
+
+    def begin_scan(self, now):
+        self.state, self.reason = 'SCAN', 'look_around'
+        self.since, self.scan_angle = now, 0.
+        self.scan_heading = self.nav.pose[2]
+        self.nav.set_mode('MANUAL', now)
+
+    def remaining(self, targets):
+        return [t for t in targets if not any(t['id'] == v['id'] or
+                math.dist(t['position'], v['position']) < .30 for v in self.visited)]
+
+    def approach_point(self, target):
+        grid = self.nav.grid
+        center = np.array(target['position'])
+        start = grid.nearest_safe(grid.cell(*self.nav.pose[:2]))
+        toward = math.atan2(self.nav.pose[1]-center[1], self.nav.pose[0]-center[0])
+        candidates = []
+        for radius in (.40, .36):
+            for offset in (0, .5, -.5, 1., -1., 1.6, -1.6, math.pi):
+                xy = center + radius*np.array([math.cos(toward+offset), math.sin(toward+offset)])
+                cell = grid.cell(*xy)
+                if not grid.inside(cell) or not grid.safe[cell]:
+                    continue
+                # Do not approach a visual estimate through a mapped wall.
+                sight = [grid.cell(*p) for p in np.linspace(xy, center, 12)]
+                if any(not grid.inside(c) or grid.odds[c] >= 4 for c in sight):
+                    continue
+                path = astar(grid.safe, start, cell)
+                if path:
+                    candidates.append((len(path), grid.xy(cell)))
+        return min(candidates, key=lambda p: p[0])[1] if candidates else None
+
+    def select_target(self, targets, now):
+        if now-self.last_selection < 1.:
+            return False
+        self.last_selection = now
+        options = sorted(self.remaining(targets), key=lambda t: math.dist(t['position'], self.nav.pose[:2]))
+        for target in options:
+            if self.deferred.get(target['id'], 0) > now or self.attempts.get(target['id'], 0) >= 3:
+                continue
+            point = self.approach_point(target)
+            if point is None:
+                self.deferred[target['id']] = now+20
+                continue
+            self.active = dict(target)
+            self.attempts[target['id']] = self.attempts.get(target['id'], 0)+1
+            self.state, self.reason, self.since = 'APPROACH', 'target_selected', now
+            self.nav.go_to(point, now)
+            return True
+        return False
+
+    def abandon_target(self, now, reason):
+        if self.active:
+            self.deferred[self.active['id']] = now+30
+        self.active = None
+        self.state, self.reason = 'SEARCH', reason
+        self.nav.set_mode('EXPLORE', now)
+
+    def coverage_point(self):
+        """Look into already mapped areas not covered by a camera sweep yet."""
+        grid = self.nav.grid
+        cells = np.argwhere(grid.safe)[::12]
+        candidates = []
+        for cell in cells:
+            xy = grid.xy(cell)
+            if self.scanned and min(math.dist(xy, p) for p in self.scanned) < 1.3:
+                continue
+            distance = math.dist(xy, self.nav.pose[:2])
+            if distance < .5:
+                continue
+            candidates.append((distance, tuple(cell)))
+        start = grid.nearest_safe(grid.cell(*self.nav.pose[:2]))
+        for _, cell in sorted(candidates)[:40]:
+            if astar(grid.safe, start, cell):
+                return grid.xy(cell)
+        return None
+
+    def protect_targets(self, targets):
+        # Low apples are below the LiDAR plane. Keep the chassis off known fruit.
+        grid = self.nav.grid
+        for t in targets:
+            r, c = grid.cell(*t['position'])
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    cell = (r+dr, c+dc)
+                    if dr*dr+dc*dc <= 9 and grid.inside(cell):
+                        grid.safe[cell] = False
+
+    def command(self, now, ranges, maximum, targets, vision_status):
+        if self.state in ('IDLE', 'PAUSED', 'SUCCEEDED', 'INCOMPLETE', 'FAILED'):
+            return 0., 0.
+        if vision_status == 'error' and self.state != 'RETURN':
+            self.return_home(now, 'vision_unavailable')
+        if vision_status in ('loading', 'stale') and self.state != 'RETURN':
+            if self.vision_wait_since is None:
+                self.vision_wait_since = now
+            if now-self.vision_wait_since < 30:
+                return 0., 0.
+            self.return_home(now, 'vision_timeout')
+        else:
+            self.vision_wait_since = None
+        if self.started is not None and now-self.started >= self.nav.limit and self.state != 'RETURN':
+            self.return_home(now, 'explicit_time_limit')
+        self.protect_targets(targets)
+        if self.state == 'RETURN':
+            command = self.nav.command(now, ranges, maximum)
+            if self.nav.mode == 'HOME':
+                self.state = 'SUCCEEDED' if len(self.visited) == 2 and self.terminal_reason == 'two_targets_visited' else 'INCOMPLETE'
+                self.reason = self.terminal_reason
+            elif self.nav.mode == 'STOPPED':
+                self.state, self.reason = 'FAILED', self.nav.reason
+            return command
+        if self.state in ('SEARCH', 'SCAN', 'COVERAGE') and self.select_target(targets, now):
+            return 0., 0.
+        if self.state == 'SCAN':
+            self.scan_angle += abs(wrap(self.nav.pose[2]-self.scan_heading))
+            self.scan_heading = self.nav.pose[2]
+            if self.scan_angle >= 2*math.pi or now-self.since > 28:
+                self.scanned.append(self.nav.pose[:2].tolist())
+                self.state, self.reason = 'SEARCH', 'sweep_complete'
+                self.nav.set_mode('EXPLORE', now)
+                return 0., 0.
+            return (0., 0.) if now-self.since < 3 else (0., .35)
+        if self.state == 'APPROACH':
+            fresh = next((t for t in targets if t['id'] == self.active['id']), None)
+            if fresh:
+                self.active = dict(fresh)
+            if self.nav.mode == 'ARRIVED' or math.dist(self.nav.pose[:2], self.active['position']) < .46:
+                self.state, self.reason, self.since = 'VERIFY', 'confirm_at_target', now
+                self.verify_frames = []
+                self.nav.set_mode('MANUAL', now)
+                return 0., 0.
+            command = self.nav.command(now, ranges, maximum)
+            if self.nav.mode == 'STOPPED' or now-self.since > 100:
+                self.abandon_target(now, 'target_unreachable')
+            return command
+        if self.state == 'VERIFY':
+            target = next((t for t in targets if t['id'] == self.active['id']), self.active)
+            delta = np.array(target['position'])-self.nav.pose[:2]
+            angle = wrap(math.atan2(delta[1], delta[0])-self.nav.pose[2])
+            if now-self.since > 15:
+                self.abandon_target(now, 'close_view_unconfirmed')
+                return 0., 0.
+            if abs(angle) > .10:
+                return 0., max(-.4, min(.4, 1.4*angle))
+            # Require NEW close camera observations after arrival, not a cached track.
+            if (np.linalg.norm(delta) <= .55 and target['last'] >= self.since and
+                    now-target['last'] < 2.5 and target.get('observed_distance', 999) <= .55 and
+                    target['last'] not in self.verify_frames):
+                self.verify_frames.append(target['last'])
+            if len(self.verify_frames) >= 3 and self.verify_frames[-1]-self.verify_frames[0] >= .3:
+                self.visited.append(dict(id=target['id'], position=target['position'], time=now,
+                                         source=target.get('source'), observed_distance=target['observed_distance']))
+                self.active = None
+                if len(self.visited) >= 2:
+                    self.return_home(now, 'two_targets_visited')
+                else:
+                    self.begin_scan(now)
+            return 0., 0.
+        if self.state == 'COVERAGE':
+            command = self.nav.command(now, ranges, maximum)
+            if self.nav.mode == 'ARRIVED':
+                self.begin_scan(now)
+            elif self.nav.mode == 'STOPPED':
+                self.scanned.append(self.nav.target_xy.tolist())
+                self.begin_scan(now)
+            return command
+        if self.state == 'SEARCH':
+            if not self.scanned or min(math.dist(self.nav.pose[:2], p) for p in self.scanned) > 1.8:
+                self.begin_scan(now)
+                return 0., 0.
+            command = self.nav.command(now, ranges, maximum)
+            if self.nav.mode == 'RETURN' and self.nav.reason == 'no_reachable_frontiers':
+                point = self.coverage_point()
+                if point is not None:
+                    self.state, self.reason = 'COVERAGE', 'inspect_mapped_area'
+                    self.nav.go_to(point, now)
+                elif self.exhaustions < 1:
+                    self.exhaustions += 1
+                    self.nav.blacklist = []
+                    self.begin_scan(now)
+                else:
+                    reason = 'targets_unreachable_or_unconfirmed' if self.remaining(targets) else 'targets_not_found'
+                    self.return_home(now, reason)
+            elif self.nav.mode == 'STOPPED':
+                self.return_home(now, 'exploration_stalled')
+            return command
+        return 0., 0.
+
+    def telemetry(self):
+        return dict(mission_state=self.state, mission_reason=self.reason,
+                    visited_count=len(self.visited), visited=self.visited,
+                    active_target=self.active['id'] if self.active else None)

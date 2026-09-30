@@ -79,9 +79,11 @@ class TargetTracker:
                 t['last'] = timestamp
                 t['confidence'] = d['confidence']
                 t['source'] = d.get('source', 'yolo_apple')
+                t['observed_distance'] = d.get('observed_distance', 999.)
             else:
                 t = dict(id=self.next_id, position=xy, hits=1, first=timestamp,
-                         last=timestamp, confidence=d['confidence'], source=d.get('source', 'yolo_apple'))
+                         last=timestamp, confidence=d['confidence'], source=d.get('source', 'yolo_apple'),
+                         observed_distance=d.get('observed_distance', 999.))
                 self.next_id += 1
                 self.tracks.append(t)
             used.add(t['id'])
@@ -147,6 +149,7 @@ def _worker(jobs, results, stop, model_path, requested):
                     continue
                 source = 'yolo_apple' if int(cls) == apple else 'appearance_candidate'
                 detections.append(dict(box=red, confidence=confidence, position=position,
+                                       observed_distance=math.dist(position, job['pose'][:2]) if position else None,
                                        source=source, yolo_class=model.names[int(cls)]))
                 x1, y1, x2, y2 = red
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
@@ -170,6 +173,7 @@ class Vision:
         self.status = 'loading'
         self.device = 'pending'
         self.last_submit = -1
+        self.last_result_time = None
 
     def submit(self, camera, pose, now):
         if now-self.last_submit < .192 or self.status == 'error':
@@ -194,10 +198,13 @@ class Vision:
                 print('[vision] ' + result['error'], flush=True)
             if 'detections' in result and 0 <= now-result['time'] <= 3:
                 self.tracker.update(result['detections'], result['time'])
+                self.last_result_time = result['time']
                 latest = result
         if not self.process.is_alive() and self.status != 'error':
             self.status = 'error'
             print('[vision] worker exited; detection unavailable', flush=True)
+        if self.status == 'running' and self.last_result_time is not None and now-self.last_result_time > 5:
+            self.status = 'stale'
         return latest
 
     def close(self):

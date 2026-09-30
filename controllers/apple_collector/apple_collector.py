@@ -1,7 +1,7 @@
-"""Stage 4: mapping, exploration, return and asynchronous red apple detection.
+"""MVP: explore, visit two red apple targets, and return to the start.
 
 Run from Webots, not ordinary Python. Install requirements.txt into its Python.
-Default: explore for 180 simulation seconds, then return to the initial pose.
+Default: mission-driven exploration, without a fixed time limit.
 controllerArgs: ["--manual"] for idle, ["--checkout"] for the stage-1 checkout,
 or ["--explore-seconds=60"] for a shorter autonomous run.
 Click the Webots 3D view for keyboard control:
@@ -200,10 +200,10 @@ def main():
     parser.add_argument("--checkout", action="store_true", help="run the stage-1 drive checkout")
     parser.add_argument("--no-vision", action="store_true", help="disable apple detector")
     parser.add_argument("--device", default="auto", help="YOLO device: auto, cpu, or 0")
-    parser.add_argument("--explore-seconds", type=float, default=180,
-                        help="exploration budget in simulation seconds, then return")
+    parser.add_argument("--explore-seconds", type=float, default=None,
+                        help="optional mission time budget in simulation seconds, then return")
     args = parser.parse_args()
-    if not math.isfinite(args.explore_seconds) or args.explore_seconds <= 0:
+    if args.explore_seconds is not None and (not math.isfinite(args.explore_seconds) or args.explore_seconds <= 0):
         parser.error("--explore-seconds must be a finite positive number")
     from controller import Robot, Keyboard
 
@@ -211,6 +211,7 @@ def main():
     log = EventLog("stage1" if args.checkout else "navigation")
     motors = []
     vision = None
+    mission = None
     try:
         timestep = int(robot.getBasicTimeStep())
         devices = {robot.getDeviceByIndex(i).getName(): robot.getDeviceByIndex(i)
@@ -242,12 +243,16 @@ def main():
         navigator = None
         if not args.checkout:
             from navigation import Navigator
-            navigator = Navigator(args.explore_seconds)
+            navigator = Navigator(args.explore_seconds if args.explore_seconds is not None else math.inf)
         display = devices.get("map")
         detection_display = devices.get("detections")
         if navigator and camera and not args.no_vision:
             from perception import Vision
+            from mission import Mission
             vision = Vision(args.device)
+            mission = Mission(navigator)
+        elif navigator and not args.no_vision:
+            raise RuntimeError('Mission requires a camera. Use --no-vision only for navigation diagnostics.')
         if log.file:
             (log.directory / "targets_latest.json").write_text("[]", encoding="utf-8")
         log.write("startup", timestep_ms=timestep, devices=sorted(devices),
@@ -266,6 +271,7 @@ def main():
         last_render = -10.0
         last_time = robot.getTime()
         last_vision_status = None
+        last_mission_status = None
         while robot.step(timestep) != -1:
             now = robot.getTime()
             dt, last_time = now-last_time, now
@@ -302,6 +308,8 @@ def main():
                 auto_start = False
             if navigator and (ord("M") in keys or ord("R") in new_keys or estop):
                 navigator.set_mode("MANUAL", now)
+                if mission:
+                    mission.pause(now)
             if not sensors_ok:
                 for motor in motors:
                     motor.setVelocity(0.0)
@@ -311,6 +319,8 @@ def main():
                     auto_start = False
                     if navigator:
                         navigator.set_mode("MANUAL", now)
+                    if mission:
+                        mission.pause(now)
                 if previous_status != "SENSOR_NOT_READY":
                     log.write("state", time=now, state="SENSOR_NOT_READY")
                     previous_status = "SENSOR_NOT_READY"
@@ -356,13 +366,21 @@ def main():
                 auto_start = False
                 if navigator:
                     navigator.set_mode("MANUAL", now)
+                if mission:
+                    mission.pause(now)
                 log.write("checkout_started", time=now)
             if navigator and not estop:
                 if (auto_start and (not vision or vision.status != "loading")) or ord("N") in new_keys:
-                    navigator.set_mode("EXPLORE", now)
+                    if mission:
+                        mission.start(now)
+                    else:
+                        navigator.set_mode("EXPLORE", now)
                     checkout, auto_start = None, False
                 elif ord("H") in new_keys:
-                    navigator.set_mode("RETURN", now)
+                    if mission:
+                        mission.return_home(now, 'operator_return')
+                    else:
+                        navigator.set_mode("RETURN", now)
                     checkout, auto_start = None, False
             motion_keys = keys.intersection({ord(c) for c in "WASD"})
             if motion_keys:
@@ -370,6 +388,8 @@ def main():
                 auto_start = False
                 if navigator:
                     navigator.set_mode("MANUAL", now)
+                if mission:
+                    mission.pause(now)
             linear = angular = 0.0
             mode = "MANUAL_IDLE"
             if estop:
@@ -377,6 +397,10 @@ def main():
             elif checkout:
                 linear, angular = checkout.command(now, positions, scan)
                 mode = checkout.phase
+            elif mission and mission.state not in ('IDLE', 'PAUSED'):
+                linear, angular = mission.command(now, ranges, lidar.getMaxRange(),
+                                                   vision.tracker.confirmed, vision.status)
+                mode = mission.state
             elif navigator and navigator.mode != "MANUAL":
                 linear, angular = navigator.command(now, ranges, lidar.getMaxRange())
                 mode = navigator.mode
@@ -407,8 +431,20 @@ def main():
                           vision_status=vision.status if vision else "disabled",
                           vision_device=vision.device if vision else None,
                           red_apples=len(vision.tracker.confirmed) if vision else 0,
+                          **(mission.telemetry() if mission else {}),
                           **(navigator.telemetry() if navigator else {}))
+                if mission and log.file:
+                    (log.directory / 'mission_latest.json').write_text(
+                        json.dumps(dict(time=now, **mission.telemetry()), indent=2), encoding='utf-8')
                 last_sample = now
+            if mission:
+                mission_status = (mission.state, mission.reason, len(mission.visited))
+                if mission_status != last_mission_status:
+                    log.write('mission', time=now, **mission.telemetry())
+                    if log.file and camera and mission.state in ('APPROACH', 'VERIFY', 'SUCCEEDED', 'INCOMPLETE', 'FAILED'):
+                        camera.saveImage(str(log.directory / f'mission_{mission.state.lower()}_camera.png'), 90)
+                    last_mission_status = mission_status
+                navigator.mission_label = f'{mission.state} | visited {len(mission.visited)}/2'
             if navigator and display and now-last_render >= 2.0:
                 navigator.render(display)
                 if log.file:

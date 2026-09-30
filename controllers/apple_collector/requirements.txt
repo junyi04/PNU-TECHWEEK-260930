@@ -1,4 +1,4 @@
-# Stages 2/3: CPU-only mapping/planning. Tested with Python 3.13 / NumPy 2.2.6.
+# MVP mapping/planning and asynchronous perception. Python 3.13 tested.
 # Do NOT pip install a package named 'controller'. Launch via Webots R2025a.
 # Install the appropriate CPU/CUDA PyTorch build first (see README).
 numpy>=1.24,<3

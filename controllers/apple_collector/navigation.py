@@ -3,7 +3,7 @@
 Coordinates are relative to the initial robot pose; no world/map/target files,
 GPS, recognition ground truth, or Supervisor API are used. This is a local
 correlative mapper, not loop-closing SLAM. Low objects outside the lidar plane
-and long-term drift remain limitations. Stage 4 will add target perception.
+and long-term drift remain limitations.
 """
 import heapq
 import math
@@ -293,7 +293,7 @@ def local_command(pose, waypoint, ranges, maximum):
 
 
 class Navigator:
-    def __init__(self, explore_seconds=180):
+    def __init__(self, explore_seconds=math.inf):
         self.localization = PoseEstimator()
         self.grid = GridMap()
         self.mode = "MANUAL"
@@ -312,6 +312,7 @@ class Navigator:
         self.frontiers_reached = 0
         self.no_route_since = None
         self.last_real_progress = 0.0
+        self.target_xy = None
 
     @property
     def pose(self):
@@ -343,14 +344,23 @@ class Navigator:
         if not self.trace or math.dist(self.trace[-1], self.pose[:2]) > 0.07:
             self.trace.append(self.pose[:2].tolist())
 
+    def go_to(self, xy, now):
+        self.set_mode('TARGET', now)
+        self.target_xy = np.array(xy, dtype=float)
+        self.goal = self.grid.nearest_safe(self.grid.cell(*xy), distance=1)
+
     def command(self, now, ranges, maximum):
-        if self.mode not in ("EXPLORE", "RETURN"):
+        if self.mode not in ("EXPLORE", "RETURN", "TARGET"):
             return 0.0, 0.0
         if self.mode == "EXPLORE" and now-self.started >= self.limit:
             self.set_mode("RETURN", now)
             self.reason = "exploration_time_limit"
         if self.mode == "RETURN" and np.linalg.norm(self.pose[:2]) < 0.16:
             self.mode, self.reason = "HOME", "within_16cm_of_estimated_start"
+            self.path = []
+            return 0.0, 0.0
+        if self.mode == 'TARGET' and np.linalg.norm(self.pose[:2]-self.target_xy) < .10:
+            self.mode, self.reason = 'ARRIVED', 'waypoint_reached'
             self.path = []
             return 0.0, 0.0
         if not self.grid.inside(self.grid.cell(*self.pose[:2])):
@@ -360,10 +370,10 @@ class Navigator:
             self.progress_time = now
             self.last_real_progress = now
             self.progress_position = self.pose[:2].copy()
-        if self.mode == "RETURN" and now-self.last_real_progress > 60:
-            self.mode, self.reason = "STOPPED", "return_stalled"
+        if self.mode in ('RETURN', 'TARGET') and now-self.last_real_progress > 45:
+            self.mode, self.reason = "STOPPED", "route_stalled"
             return 0.0, 0.0
-        if self.goal is not None and np.linalg.norm(self.pose[:2]-self.grid.xy(self.goal)) < 0.22:
+        if self.mode != 'TARGET' and self.goal is not None and np.linalg.norm(self.pose[:2]-self.grid.xy(self.goal)) < 0.22:
             if self.mode == "EXPLORE":
                 self.frontiers_reached += 1
                 self.blacklist.append((self.grid.xy(self.goal), now+90))
@@ -383,6 +393,8 @@ class Navigator:
             start = self.grid.nearest_safe(self.grid.cell(*self.pose[:2]))
             if self.mode == "RETURN":
                 self.goal = self.grid.nearest_safe(self.grid.cell(0, 0), distance=2)
+            elif self.mode == 'TARGET':
+                self.goal = self.grid.nearest_safe(self.grid.cell(*self.target_xy), distance=1)
             if self.goal is not None:
                 self.path = astar(self.grid.safe, start, self.goal)
             if not self.path and self.mode == "EXPLORE":
@@ -401,11 +413,11 @@ class Navigator:
                     self.reason = "no_reachable_frontiers"
                     return 0.0, 0.0
             if not self.path:
-                self.reason = "return_path_blocked_waiting"
+                self.reason = "path_blocked_waiting"
                 if self.no_route_since is None:
                     self.no_route_since = now
-                if now-self.no_route_since > 60:
-                    self.mode, self.reason = "STOPPED", "return_path_unavailable"
+                if now-self.no_route_since > 20:
+                    self.mode, self.reason = "STOPPED", "path_unavailable"
                 return 0.0, 0.0
             self.no_route_since = None
         if not self.path:
@@ -485,5 +497,5 @@ class Navigator:
         display.fillRectangle(0, 0, width, 40)
         display.setColor(0xFFFFFF)
         display.setFont("Arial", 13, True)
-        display.drawText(f"{self.mode}  |  N explore  H home  SPACE stop", 6, 3)
+        display.drawText(getattr(self, 'mission_label', f"{self.mode} | N explore H home SPACE stop"), 6, 3)
         display.drawText(f"x={self.pose[0]:.2f} y={self.pose[1]:.2f}  {self.reason}", 6, 21)
