@@ -468,6 +468,11 @@ class Navigator:
         display.setColor(0x168BDA)
         for a, b in zip(self.path, self.path[1:]):
             display.drawLine(*screen(self.grid.xy(a)), *screen(self.grid.xy(b)))
+        display.setColor(0xFF8800)
+        for target in getattr(self, 'targets', []):
+            tx, ty = screen(target['position'])
+            display.drawOval(tx, ty, 7, 7)
+            display.drawText(f"apple {target['id']}", tx+8, ty)
         display.setColor(0x16A34A)
         x, y = screen((0, 0))
         display.fillOval(x, y, 5, 5)

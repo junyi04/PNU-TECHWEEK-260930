@@ -1,4 +1,4 @@
-"""Stages 2/3: sensor-only mapping, exploration and return (no apple detection).
+"""Stage 4: mapping, exploration, return and asynchronous red apple detection.
 
 Run from Webots, not ordinary Python. Install requirements.txt into its Python.
 Default: explore for 180 simulation seconds, then return to the initial pose.
@@ -177,6 +177,8 @@ class EventLog:
             except OSError:
                 self.file.close()
                 self.file = None
+        if event == "detections":
+            return
         if event != "sample":
             print("[robot] " + json.dumps(record), flush=True)
         else:
@@ -196,6 +198,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manual", action="store_true", help="start stationary in manual mode")
     parser.add_argument("--checkout", action="store_true", help="run the stage-1 drive checkout")
+    parser.add_argument("--no-vision", action="store_true", help="disable apple detector")
+    parser.add_argument("--device", default="auto", help="YOLO device: auto, cpu, or 0")
     parser.add_argument("--explore-seconds", type=float, default=180,
                         help="exploration budget in simulation seconds, then return")
     args = parser.parse_args()
@@ -206,6 +210,7 @@ def main():
     robot = Robot()  # deliberately not Supervisor: no ground-truth pose access
     log = EventLog("stage1" if args.checkout else "navigation")
     motors = []
+    vision = None
     try:
         timestep = int(robot.getBasicTimeStep())
         devices = {robot.getDeviceByIndex(i).getName(): robot.getDeviceByIndex(i)
@@ -239,6 +244,12 @@ def main():
             from navigation import Navigator
             navigator = Navigator(args.explore_seconds)
         display = devices.get("map")
+        detection_display = devices.get("detections")
+        if navigator and camera and not args.no_vision:
+            from perception import Vision
+            vision = Vision(args.device)
+        if log.file:
+            (log.directory / "targets_latest.json").write_text("[]", encoding="utf-8")
         log.write("startup", timestep_ms=timestep, devices=sorted(devices),
                   camera=[camera.getWidth(), camera.getHeight()] if camera else None,
                   lidar_points=lidar.getHorizontalResolution(),
@@ -254,6 +265,7 @@ def main():
         previous_keys = set()
         last_render = -10.0
         last_time = robot.getTime()
+        last_vision_status = None
         while robot.step(timestep) != -1:
             now = robot.getTime()
             dt, last_time = now-last_time, now
@@ -314,6 +326,31 @@ def main():
             if navigator:
                 navigator.observe(positions, gyro_z,
                                   ranges, lidar.getMaxRange(), now, dt)
+            if vision:
+                vision.submit(camera, navigator.pose, now)
+                result = vision.poll(now)
+                navigator.targets = vision.tracker.confirmed
+                vision_state = (vision.status, vision.device, len(navigator.targets))
+                if vision_state != last_vision_status:
+                    print(f"[vision] {vision.status} device={vision.device} red targets={len(navigator.targets)}/2", flush=True)
+                    last_vision_status = vision_state
+                if result and log.file:
+                    (log.directory / "targets_latest.json").write_text(
+                        json.dumps(navigator.targets, indent=2), encoding="utf-8")
+                    log.write('detections', time=now, captured_at=result['time'],
+                              device=result['device'], detections=result['detections'])
+                if detection_display:
+                    if result:
+                        rgb = result['rgb']
+                        picture = detection_display.imageNew(rgb.tobytes(), detection_display.RGB,
+                                                             rgb.shape[1], rgb.shape[0])
+                        detection_display.imagePaste(picture, 0, 0, False)
+                        detection_display.imageDelete(picture)
+                    detection_display.setColor(0x17202C)
+                    detection_display.fillRectangle(0, 0, 640, 24)
+                    detection_display.setColor(0xFFFFFF)
+                    detection_display.drawText(
+                        f"YOLO {vision.device}: {vision.status} | red confirmed {len(navigator.targets)}/2", 5, 4)
             if not estop and (ord("T") in new_keys or (auto_start and args.checkout)):
                 checkout = Checkout(now, positions)
                 auto_start = False
@@ -321,7 +358,7 @@ def main():
                     navigator.set_mode("MANUAL", now)
                 log.write("checkout_started", time=now)
             if navigator and not estop:
-                if auto_start or ord("N") in new_keys:
+                if (auto_start and (not vision or vision.status != "loading")) or ord("N") in new_keys:
                     navigator.set_mode("EXPLORE", now)
                     checkout, auto_start = None, False
                 elif ord("H") in new_keys:
@@ -367,6 +404,9 @@ def main():
             if now - last_sample >= 1.0:
                 log.write("sample", time=now, state=mode, scan=scan, encoders=positions,
                           wheels=speeds, **inertial,
+                          vision_status=vision.status if vision else "disabled",
+                          vision_device=vision.device if vision else None,
+                          red_apples=len(vision.tracker.confirmed) if vision else 0,
                           **(navigator.telemetry() if navigator else {}))
                 last_sample = now
             if navigator and display and now-last_render >= 2.0:
@@ -382,6 +422,8 @@ def main():
     finally:
         for motor in motors:
             motor.setVelocity(0.0)
+        if vision:
+            vision.close()
         log.close()
 
 

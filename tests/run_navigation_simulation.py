@@ -99,7 +99,7 @@ extensionSlot [ RobotisLds01 {} Display { name "map" width 480 height 480 } ] }
 '''
         world+=wall(-3,0,.1,6)+wall(3,0,.1,6)+wall(0,-3,6,.1)+wall(0,3,6,.1)
         world+=wall(1.2,0,.12,2)
-    world=world.replace('controller "apple_collector"',f'controller "apple_collector" controllerArgs ["--explore-seconds={args.seconds}"]',1)
+    world=world.replace('controller "apple_collector"',f'controller "apple_collector" controllerArgs ["--no-vision" "--explore-seconds={args.seconds}"]',1)
     world+='\nRobot { supervisor TRUE controller "observer" }\n'
     (project/'worlds/check.wbt').write_text(world,encoding='utf-8')
     (project/'controllers/observer/observer.py').write_text(

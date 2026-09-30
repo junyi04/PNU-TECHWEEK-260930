@@ -945,6 +945,11 @@ TurtleBot3Burger {
   controller "apple_collector"
   extensionSlot [
     Display {
+      name "detections"
+      width 640
+      height 480
+    }
+    Display {
       name "map"
       width 480
       height 480
