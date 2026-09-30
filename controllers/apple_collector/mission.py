@@ -46,8 +46,8 @@ class Mission:
         self.begin_scan(now)
         self.reason = 'retry_unfinished_search'
 
-    def pause(self, now):
-        self.state, self.reason = 'PAUSED', 'operator_pause'
+    def pause(self, now, reason='operator_pause'):
+        self.state, self.reason = 'PAUSED', reason
         self.nav.set_mode('MANUAL', now)
 
     def start(self, now):

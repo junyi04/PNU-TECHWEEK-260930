@@ -262,6 +262,7 @@ def main():
         print("[robot] N=explore H=home T=checkout M=manual WASD=move SPACE/X=STOP R=release", flush=True)
         ready = False
         estop = False
+        estop_reason = 'emergency_stop'
         checkout = None
         auto_start = not args.manual
         started = robot.getTime()
@@ -298,6 +299,7 @@ def main():
             previous_keys = keys
             if ord("X") in keys or ord(" ") in keys:
                 estop = True
+                estop_reason = 'keyboard_stop_X' if ord('X') in keys else 'keyboard_stop_SPACE'
                 auto_start = False
                 checkout = None
             elif ord("R") in new_keys:
@@ -310,18 +312,20 @@ def main():
             if navigator and (ord("M") in keys or ord("R") in new_keys or estop):
                 navigator.set_mode("MANUAL", now)
                 if mission:
-                    mission.pause(now)
+                    mission.pause(now, estop_reason if estop else
+                                  'keyboard_release_R' if ord('R') in new_keys else 'keyboard_manual_M')
             if not sensors_ok:
                 for motor in motors:
                     motor.setVelocity(0.0)
                 if ready:
                     estop = True
+                    estop_reason = 'sensor_invalid_latched_stop'
                     checkout = None
                     auto_start = False
                     if navigator:
                         navigator.set_mode("MANUAL", now)
                     if mission:
-                        mission.pause(now)
+                        mission.pause(now, estop_reason)
                 if previous_status != "SENSOR_NOT_READY":
                     log.write("state", time=now, state="SENSOR_NOT_READY")
                     previous_status = "SENSOR_NOT_READY"
@@ -371,7 +375,7 @@ def main():
                 if navigator:
                     navigator.set_mode("MANUAL", now)
                 if mission:
-                    mission.pause(now)
+                    mission.pause(now, 'keyboard_checkout_T')
                 log.write("checkout_started", time=now)
             if navigator and not estop:
                 if (auto_start and (not vision or vision.status != "loading")) or ord("N") in new_keys:
@@ -393,7 +397,8 @@ def main():
                 if navigator:
                     navigator.set_mode("MANUAL", now)
                 if mission:
-                    mission.pause(now)
+                    mission.pause(now, estop_reason if estop else
+                                  'keyboard_manual_' + ''.join(chr(k) for k in sorted(motion_keys)))
             linear = angular = 0.0
             mode = "MANUAL_IDLE"
             if estop:
