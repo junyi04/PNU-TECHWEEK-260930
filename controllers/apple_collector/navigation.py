@@ -190,10 +190,15 @@ class GridMap:
 
     def line_clear(self, a, b):
         steps = max(2, int(np.linalg.norm(b-a)/self.resolution*3)+1)
+        previous = None
         for point in np.linspace(a, b, steps):
             cell = self.cell(*point)
             if not self.inside(cell) or not self.safe[cell]:
                 return False
+            if previous is not None and cell[0] != previous[0] and cell[1] != previous[1]:
+                if not self.safe[previous[0], cell[1]] or not self.safe[cell[0], previous[1]]:
+                    return False
+            previous = cell
         return True
 
     def frontier_goals(self, pose, blacklist, now):
@@ -238,19 +243,26 @@ def path_cost(path, resolution=1.):
 
 def astar(safe, start, goal):
     """8-neighbor A* with Euclidean admissible heuristic, no corner cutting."""
+    return astar_to_any(safe, start, [goal])
+
+
+def astar_to_any(safe, start, goals):
+    """One search finds the shortest route to ANY acceptable destination."""
     h, w = safe.shape
-    if start is None or goal is None or not (0 <= start[0] < h and 0 <= start[1] < w
-            and 0 <= goal[0] < h and 0 <= goal[1] < w):
+    if start is None or not (0 <= start[0] < h and 0 <= start[1] < w) or not safe[start]:
         return []
-    if not safe[start] or not safe[goal]:
+    goals = {g for g in goals if g is not None and 0 <= g[0] < h and 0 <= g[1] < w and safe[g]}
+    if not goals:
         return []
-    queue = [(math.dist(start, goal), 0.0, start)]
+    def heuristic(point):
+        return min(math.dist(point, goal) for goal in goals)
+    queue = [(heuristic(start), 0.0, start)]
     costs, parent = {start: 0.0}, {}
     while queue:
         _, cost, current = heapq.heappop(queue)
         if cost > costs[current]:
             continue
-        if current == goal:
+        if current in goals:
             path = [current]
             while current in parent:
                 current = parent[current]
@@ -267,7 +279,7 @@ def astar(safe, start, goal):
             value = cost + (math.sqrt(2) if dr and dc else 1)
             if value < costs.get(point, math.inf):
                 costs[point], parent[point] = value, current
-                heapq.heappush(queue, (value + math.dist(point, goal), value, point))
+                heapq.heappush(queue, (value + heuristic(point), value, point))
     return []
 
 
@@ -410,13 +422,12 @@ class Navigator:
                     if distance < .16:
                         candidates.append((distance, cell))
         self.return_plan_failure = 'home_region_blocked' if not candidates else 'home_region_disconnected'
-        for _, cell in sorted(candidates):
-            path = astar(self.grid.safe, start, cell)
-            if path:
-                self.path, self.goal = path, cell
-                self.return_plan_failure = None
-                self.return_route_kind = 'home'
-                return
+        path = astar_to_any(self.grid.safe, start, [cell for _, cell in candidates])
+        if path:
+            self.path, self.goal = path, path[-1]
+            self.return_plan_failure = None
+            self.return_route_kind = 'home'
+            return
         if previous_goal is not None and np.linalg.norm(self.grid.xy(previous_goal)-self.pose[:2]) >= .22:
             path = astar(self.grid.safe, start, previous_goal)
             if path:
@@ -513,7 +524,8 @@ class Navigator:
         if self.mode in ('RETURN', 'TARGET') and now-self.last_real_progress > 45:
             self.mode, self.reason = "STOPPED", "route_stalled"
             return 0.0, 0.0
-        if self.mode != 'TARGET' and self.goal is not None and np.linalg.norm(self.pose[:2]-self.grid.xy(self.goal)) < 0.22:
+        if (self.mode != 'TARGET' and not (self.mode == 'RETURN' and self.return_route_kind == 'home')
+                and self.goal is not None and np.linalg.norm(self.pose[:2]-self.grid.xy(self.goal)) < 0.22):
             if self.mode == "EXPLORE":
                 self.frontiers_reached += 1
                 self.blacklist.append((self.grid.xy(self.goal), now+90))
@@ -525,8 +537,10 @@ class Navigator:
             self.path = []
             self.progress_time = now
             self.reason = "stuck_replan"
-        # Replan periodically, keeping the target stable until reached/blocked.
-        if now-self.last_plan > 2.0 or not self.path:
+        # Validate the current route cheaply; don't rebuild an unchanged A*
+        # route every two seconds. Refresh periodically to discover shortcuts.
+        route_invalid = bool(self.path) and any(not self.grid.safe[p] for p in self.path)
+        if now-self.last_plan > 6.0 or not self.path or route_invalid:
             if not self.path and now-self.last_plan < 0.8:
                 return 0.0, 0.0
             self.last_plan = now
@@ -564,15 +578,17 @@ class Navigator:
                       key=lambda i: np.linalg.norm(self.grid.xy(self.path[i])-self.pose[:2]))
         self.path = self.path[closest:]
         index = 0
-        for i in range(1, min(len(self.path), 6)):
-            if np.linalg.norm(self.grid.xy(self.path[i])-self.pose[:2]) > 0.32:
+        for i in range(1, min(len(self.path), 13)):
+            if np.linalg.norm(self.grid.xy(self.path[i])-self.pose[:2]) > 0.60:
                 break
             if not self.grid.line_clear(self.pose[:2], self.grid.xy(self.path[i])):
                 break
             index = i
         waypoint = self.grid.xy(self.path[index])
         if index == 0 and len(self.path) > 1:
-            waypoint = self.grid.xy(self.path[1])
+            self.path = []
+            self.reason = 'no_safe_lookahead'
+            return 0., 0.
         if not all(self.grid.safe[p] for p in self.path[:max(2, index+1)]):
             self.path = []
             self.reason = "path_changed"
