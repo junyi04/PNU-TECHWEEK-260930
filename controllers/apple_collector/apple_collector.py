@@ -443,6 +443,12 @@ def main():
                     log.write('mission', time=now, **mission.telemetry())
                     if log.file and camera and mission.state in ('APPROACH', 'VERIFY', 'SUCCEEDED', 'INCOMPLETE', 'FAILED'):
                         camera.saveImage(str(log.directory / f'mission_{mission.state.lower()}_camera.png'), 90)
+                    if log.file and mission.state == 'FAILED':
+                        import numpy as np
+                        np.savez_compressed(log.directory / 'return_failure_latest.npz',
+                                            odds=navigator.grid.odds, safe=navigator.grid.safe,
+                                            pose=navigator.pose, trace=np.asarray(navigator.trace),
+                                            resolution=navigator.grid.resolution)
                     last_mission_status = mission_status
                 navigator.mission_label = f'{mission.state} | visited {len(mission.visited)}/2'
             if navigator and display and now-last_render >= 2.0:

@@ -60,6 +60,68 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(robot.command(2, [1]*360, 3.5), (0, 0))
         self.assertEqual(robot.mode, "HOME")
 
+    def test_return_tries_reachable_home_cell_when_nearest_is_isolated(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = False
+        # Nearest cell (0.04, 0.04) is safe but isolated. A parallel corridor
+        # reaches another cell inside the SAME 16 cm home tolerance.
+        home = robot.grid.cell(0, 0)
+        robot.grid.safe[home] = True
+        for col in range(home[1], home[1]+12):
+            robot.grid.safe[home[0]-2, col] = True
+        start = (home[0]-2, home[1]+11)
+        robot.plan_home(start)
+        self.assertTrue(robot.path)
+        self.assertNotEqual(robot.goal, home)
+        self.assertLess(np.linalg.norm(robot.grid.xy(robot.goal)), .16)
+
+    def test_return_rejects_outside_radius_and_discards_stale_path(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = False
+        cell = robot.grid.cell(.20, .04)
+        robot.grid.safe[cell] = True
+        robot.path, robot.goal = [cell], cell
+        robot.plan_home(cell)
+        self.assertEqual(robot.path, [])
+        self.assertIsNone(robot.goal)
+        self.assertEqual(robot.return_plan_failure, 'home_region_blocked')
+
+    def test_return_does_not_cross_disconnected_map(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = False
+        start = robot.grid.cell(2, 0)
+        robot.grid.safe[start] = True
+        robot.grid.safe[robot.grid.cell(0, 0)] = True
+        robot.plan_home(start)
+        self.assertEqual(robot.path, [])
+        self.assertEqual(robot.return_plan_failure, 'home_region_disconnected')
+
+    def test_blocked_home_uses_safe_recorded_waypoint_without_claiming_arrival(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = True
+        r, c = robot.grid.cell(0, 0)
+        robot.grid.safe[r-3:r+4, c-3:c+4] = False
+        robot.pose[:] = [3, 0, 0]
+        robot.trace = [[0, 0], [.8, 0], [1.5, 0], [3, 0]]
+        robot.set_mode('RETURN', 0)
+        robot.command(1, [3.5]*360, 3.5)
+        self.assertEqual(robot.mode, 'RETURN')
+        self.assertEqual(robot.return_route_kind, 'recorded_waypoint')
+        self.assertLess(np.linalg.norm(robot.grid.xy(robot.goal)), 1)
+        self.assertTrue(all(robot.grid.safe[cell] for cell in robot.path))
+
+    def test_historical_route_does_not_override_new_obstacle(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = False
+        robot.pose[:] = [3, 0, 0]
+        start = robot.grid.cell(3, 0)
+        robot.grid.safe[start] = True
+        robot.grid.safe[robot.grid.cell(.8, 0)] = True
+        robot.trace = [[0, 0], [.8, 0], [3, 0]]
+        robot.plan_home(start)
+        self.assertEqual(robot.path, [])
+        self.assertIsNone(robot.return_route_kind)
+
 
 if __name__ == "__main__":
     unittest.main()

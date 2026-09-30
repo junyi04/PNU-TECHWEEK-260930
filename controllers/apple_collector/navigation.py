@@ -313,6 +313,8 @@ class Navigator:
         self.no_route_since = None
         self.last_real_progress = 0.0
         self.target_xy = None
+        self.return_plan_failure = None
+        self.return_route_kind = None
 
     @property
     def pose(self):
@@ -348,6 +350,62 @@ class Navigator:
         self.set_mode('TARGET', now)
         self.target_xy = np.array(xy, dtype=float)
         self.goal = self.grid.nearest_safe(self.grid.cell(*xy), distance=1)
+
+    def plan_home(self, start):
+        """Try reachable home cells, not just the single geometrically nearest one.
+
+        All endpoints must satisfy the existing arrival radius. Never clear
+        obstacles or unknown cells to manufacture a return route.
+        """
+        self.path, self.goal = [], None
+        self.return_route_kind = None
+        if start is None:
+            self.return_plan_failure = 'robot_has_no_safe_start_cell'
+            return
+        row, col = self.grid.cell(0, 0)
+        candidates = []
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                cell = row+dr, col+dc
+                if self.grid.inside(cell) and self.grid.safe[cell]:
+                    distance = float(np.linalg.norm(self.grid.xy(cell)))
+                    if distance < .16:
+                        candidates.append((distance, cell))
+        self.return_plan_failure = 'home_region_blocked' if not candidates else 'home_region_disconnected'
+        for _, cell in sorted(candidates):
+            path = astar(self.grid.safe, start, cell)
+            if path:
+                self.path, self.goal = path, cell
+                self.return_plan_failure = None
+                self.return_route_kind = 'home'
+                return
+        # A long run can temporarily obscure home in the map. Get closer via
+        # an earlier observed waypoint, but ONLY along currently safe A* cells.
+        # Historical traversal alone is never used as collision clearance.
+        current_distance = float(np.linalg.norm(self.pose[:2]))
+        seen, recovery = set(), []
+        for xy in self.trace:
+            cell = self.grid.cell(*xy)
+            if cell in seen or not self.grid.inside(cell) or not self.grid.safe[cell]:
+                continue
+            seen.add(cell)
+            distance = float(np.linalg.norm(self.grid.xy(cell)))
+            if distance >= current_distance-.30 or np.linalg.norm(self.grid.xy(cell)-self.pose[:2]) < .45:
+                continue
+            recovery.append((distance, cell))
+        # Bound planning cost and avoid testing dozens of almost identical points.
+        spaced = []
+        for _, cell in sorted(recovery):
+            if any(math.dist(cell, old) < 4 for old in spaced):
+                continue
+            spaced.append(cell)
+            path = astar(self.grid.safe, start, cell)
+            if path:
+                self.path, self.goal = path, cell
+                self.return_route_kind = 'recorded_waypoint'
+                return
+            if len(spaced) >= 24:
+                break
 
     def command(self, now, ranges, maximum):
         if self.mode not in ("EXPLORE", "RETURN", "TARGET"):
@@ -392,10 +450,10 @@ class Navigator:
             self.last_plan = now
             start = self.grid.nearest_safe(self.grid.cell(*self.pose[:2]))
             if self.mode == "RETURN":
-                self.goal = self.grid.nearest_safe(self.grid.cell(0, 0), distance=2)
+                self.plan_home(start)
             elif self.mode == 'TARGET':
                 self.goal = self.grid.nearest_safe(self.grid.cell(*self.target_xy), distance=1)
-            if self.goal is not None:
+            if self.mode != 'RETURN' and self.goal is not None:
                 self.path = astar(self.grid.safe, start, self.goal)
             if not self.path and self.mode == "EXPLORE":
                 if self.goal is not None:
@@ -444,6 +502,9 @@ class Navigator:
 
     def telemetry(self):
         return {"pose": self.pose.tolist(), "nav_mode": self.mode, "reason": self.reason,
+                "home_distance_m": float(np.linalg.norm(self.pose[:2])),
+                "return_plan_failure": self.return_plan_failure,
+                "return_route_kind": self.return_route_kind,
                 "mapped_m2": float(np.count_nonzero(self.grid.odds) * self.grid.resolution**2),
                 "distance_m": self.localization.distance,
                 "frontiers_reached": self.frontiers_reached,
