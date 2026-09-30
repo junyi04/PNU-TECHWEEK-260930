@@ -272,6 +272,7 @@ def main():
         last_time = robot.getTime()
         last_vision_status = None
         last_mission_status = None
+        last_camera_log = -10.
         while robot.step(timestep) != -1:
             now = robot.getTime()
             dt, last_time = now-last_time, now
@@ -333,6 +334,9 @@ def main():
                     log.write("camera_snapshot", time=now, saved=result == 0)
             if not ready:
                 continue
+            if camera and log.file and now-last_camera_log >= 10:
+                camera.saveImage(str(log.directory / 'camera_latest.png'), 90)
+                last_camera_log = now
             if navigator:
                 navigator.observe(positions, gyro_z,
                                   ranges, lidar.getMaxRange(), now, dt)

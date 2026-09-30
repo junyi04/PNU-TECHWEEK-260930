@@ -4,7 +4,7 @@ Arrival thresholds are MVP choices, not official competition scoring rules.
 """
 import math
 import numpy as np
-from navigation import astar, wrap
+from navigation import astar, wrap, path_cost
 
 
 class Mission:
@@ -26,6 +26,8 @@ class Mission:
         self.terminal_reason = None
         self.last_selection = -100.
         self.vision_wait_since = None
+        self.resume_goal = None
+        self.scan_count = 0
 
     def pause(self, now):
         self.state, self.reason = 'PAUSED', 'operator_pause'
@@ -45,10 +47,23 @@ class Mission:
         self.nav.set_mode('RETURN', now)
 
     def begin_scan(self, now):
+        # Keep a selected frontier across an observation stop. Do not sweep
+        # the same location again just because another state requested it.
+        self.resume_goal = self.nav.goal if self.nav.mode == 'EXPLORE' else None
+        if any(math.dist(self.nav.pose[:2], p) < .75 for p in self.scanned):
+            self.resume_search(now, 'recently_observed_location')
+            return
         self.state, self.reason = 'SCAN', 'look_around'
+        self.scan_count += 1
         self.since, self.scan_angle = now, 0.
         self.scan_heading = self.nav.pose[2]
         self.nav.set_mode('MANUAL', now)
+
+    def resume_search(self, now, reason='sweep_complete'):
+        self.state, self.reason = 'SEARCH', reason
+        self.nav.set_mode('EXPLORE', now)
+        self.nav.goal = self.resume_goal
+        self.resume_goal = None
 
     def remaining(self, targets):
         return [t for t in targets if not any(t['id'] == v['id'] or
@@ -72,7 +87,7 @@ class Mission:
                     continue
                 path = astar(grid.safe, start, cell)
                 if path:
-                    candidates.append((len(path), grid.xy(cell)))
+                    candidates.append((path_cost(path, grid.resolution), grid.xy(cell)))
         return min(candidates, key=lambda p: p[0])[1] if candidates else None
 
     def select_target(self, targets, now):
@@ -80,6 +95,8 @@ class Mission:
             return False
         self.last_selection = now
         options = sorted(self.remaining(targets), key=lambda t: math.dist(t['position'], self.nav.pose[:2]))
+        choices = []
+        start = self.nav.grid.nearest_safe(self.nav.grid.cell(*self.nav.pose[:2]))
         for target in options:
             if self.deferred.get(target['id'], 0) > now or self.attempts.get(target['id'], 0) >= 3:
                 continue
@@ -87,6 +104,11 @@ class Mission:
             if point is None:
                 self.deferred[target['id']] = now+20
                 continue
+            route = astar(self.nav.grid.safe, start, self.nav.grid.cell(*point))
+            if route:
+                choices.append((path_cost(route, self.nav.grid.resolution), target, point))
+        if choices:
+            _, target, point = min(choices, key=lambda c: c[0])
             self.active = dict(target)
             self.attempts[target['id']] = self.attempts.get(target['id'], 0)+1
             self.state, self.reason, self.since = 'APPROACH', 'target_selected', now
@@ -162,8 +184,7 @@ class Mission:
             self.scan_heading = self.nav.pose[2]
             if self.scan_angle >= 2*math.pi or now-self.since > 28:
                 self.scanned.append(self.nav.pose[:2].tolist())
-                self.state, self.reason = 'SEARCH', 'sweep_complete'
-                self.nav.set_mode('EXPLORE', now)
+                self.resume_search(now)
                 return 0., 0.
             return (0., 0.) if now-self.since < 3 else (0., .35)
         if self.state == 'APPROACH':
@@ -211,10 +232,11 @@ class Mission:
                 self.begin_scan(now)
             return command
         if self.state == 'SEARCH':
-            if not self.scanned or min(math.dist(self.nav.pose[:2], p) for p in self.scanned) > 1.8:
+            reached_before = self.nav.frontiers_reached
+            command = self.nav.command(now, ranges, maximum)
+            if self.nav.mode == 'EXPLORE' and self.nav.frontiers_reached > reached_before:
                 self.begin_scan(now)
                 return 0., 0.
-            command = self.nav.command(now, ranges, maximum)
             if self.nav.mode == 'RETURN' and self.nav.reason == 'no_reachable_frontiers':
                 point = self.coverage_point()
                 if point is not None:
@@ -234,5 +256,6 @@ class Mission:
 
     def telemetry(self):
         return dict(mission_state=self.state, mission_reason=self.reason,
+                    scan_count=self.scan_count,
                     visited_count=len(self.visited), visited=self.visited,
                     active_target=self.active['id'] if self.active else None)

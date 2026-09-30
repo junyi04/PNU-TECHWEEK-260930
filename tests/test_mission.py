@@ -89,6 +89,32 @@ class MissionTests(unittest.TestCase):
         self.m.command(36, self.scan, 3.5, [], 'stale')
         self.assertEqual(self.m.reason, 'vision_timeout')
 
+    def test_scan_resumes_existing_frontier(self):
+        self.nav.set_mode('EXPLORE', 0)
+        goal = self.nav.grid.cell(3, 2)
+        self.nav.goal = goal
+        self.m.begin_scan(1)
+        self.m.scan_angle = 2*math.pi
+        self.m.command(5, self.scan, 3.5, [], 'running')
+        self.assertEqual(self.m.state, 'SEARCH')
+        self.assertEqual(self.nav.goal, goal)
+
+    def test_same_place_does_not_trigger_another_sweep(self):
+        self.m.scanned = [[0., 0.]]
+        self.m.begin_scan(1)
+        self.assertEqual(self.m.state, 'SEARCH')
+        self.assertEqual(self.m.scan_count, 0)
+
+    def test_distance_alone_does_not_interrupt_route(self):
+        from unittest.mock import Mock
+        self.m.state = 'SEARCH'
+        self.m.scanned = [[0., 0.]]
+        self.nav.pose[:] = [3., 0., 0.]
+        self.nav.mode = 'EXPLORE'
+        self.nav.command = Mock(return_value=(.12, 0.))
+        self.assertEqual(self.m.command(1, self.scan, 3.5, [], 'running'), (.12, 0.))
+        self.assertEqual(self.m.state, 'SEARCH')
+
 
 if __name__ == '__main__':
     unittest.main()

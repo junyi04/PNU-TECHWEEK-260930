@@ -48,7 +48,9 @@ class PoseEstimator:
         self.previous = np.array(wheels)
         ds = float(delta.mean())
         wheel_turn = float((delta[1] - delta[0]) / 0.16)
-        turn = wheel_turn if gyro_z is None else 0.95 * gyro_z * dt + 0.05 * wheel_turn
+        # Wheel yaw is biased during skid turns. Mixing it into a valid gyro
+        # introduces systematic heading drift on every camera sweep.
+        turn = wheel_turn if gyro_z is None else gyro_z * dt
         theta = self.pose[2]
         corrected = wrap(theta + turn)
         mid = theta + wrap(corrected - theta) / 2
@@ -185,6 +187,7 @@ class GridMap:
         return True
 
     def frontier_goals(self, pose, blacklist, now):
+        self.frontier_gain = {}
         unknown = self.odds == 0
         boundary = self.safe & (shifted(unknown, 1, 0) | shifted(unknown, -1, 0) |
                                 shifted(unknown, 0, 1) | shifted(unknown, 0, -1))
@@ -211,11 +214,16 @@ class GridMap:
                                      for old, until in blacklist):
                 continue
             goals.append((distance - min(1.0, 0.03 * len(group)), point))
+            self.frontier_gain[point] = len(group)
         return [p for _, p in sorted(goals)[:16]]
 
 
 NEIGHBORS = ((-1, 0), (1, 0), (0, -1), (0, 1),
              (-1, -1), (-1, 1), (1, -1), (1, 1))
+
+
+def path_cost(path, resolution=1.):
+    return sum(math.dist(a, b) for a, b in zip(path, path[1:])) * resolution
 
 
 def astar(safe, start, goal):
@@ -351,6 +359,20 @@ class Navigator:
         self.target_xy = np.array(xy, dtype=float)
         self.goal = self.grid.nearest_safe(self.grid.cell(*xy), distance=1)
 
+    def choose_frontier(self, start, candidates):
+        best = None
+        for target in candidates:
+            path = astar(self.grid.safe, start, target)
+            if not path:
+                continue
+            delta = self.grid.xy(path[min(3, len(path)-1)])-self.pose[:2]
+            turn = abs(wrap(math.atan2(delta[1], delta[0])-self.pose[2]))
+            gain = getattr(self.grid, 'frontier_gain', {}).get(target, 0)
+            score = path_cost(path, self.grid.resolution) + .12*turn - min(.8, .02*gain)
+            if best is None or score < best[0]:
+                best = score, target, path
+        return (best[1], best[2]) if best else (None, [])
+
     def plan_home(self, start):
         """Try reachable home cells, not just the single geometrically nearest one.
 
@@ -460,12 +482,9 @@ class Navigator:
                     self.blacklist.append((self.grid.xy(self.goal), now+45))
                 self.goal = None
                 candidates = self.grid.frontier_goals(self.pose, self.blacklist, now)
-                for target in candidates:
-                    path = astar(self.grid.safe, start, target)
-                    if path:
-                        self.path, self.goal = path, target
-                        self.reason = "frontier_selected"
-                        break
+                self.goal, self.path = self.choose_frontier(start, candidates)
+                if self.path:
+                    self.reason = "frontier_selected_by_route_cost"
                 if not self.path:
                     self.set_mode("RETURN", now)
                     self.reason = "no_reachable_frontiers"

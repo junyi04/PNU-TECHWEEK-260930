@@ -19,15 +19,23 @@ root=Path(__file__).resolve().parents[2]
 robot=r.getFromDef('TEST_ROBOT')
 apples=[r.getFromDef('TEST_APPLE_1'),r.getFromDef('TEST_APPLE_2')]
 start=None
+start_heading=0
 closest=[999,999]
 contacts=0
 sample={}
 read_at=0
 started=None
+last_truth=-1
+last_visited=0
+physical_visits=set()
+truth_file=(root/'truth.jsonl').open('w')
 while r.step(64)!=-1:
     now=r.getTime()
     p=robot.getPosition()
-    if start is None and now>.5: start=list(p)
+    if start is None and now>.5:
+        start=list(p)
+        orientation=robot.getOrientation()
+        start_heading=math.atan2(orientation[3],orientation[0])
     if start:
         closest=[min(d,math.dist(p[:2],a.getPosition()[:2])) for d,a in zip(closest,apples)]
         contacts+=sum(c.point[2]>.04 for c in robot.getContactPoints(True))
@@ -41,14 +49,32 @@ while r.step(64)!=-1:
                 read_at+=len(line)
                 if event['event']=='sample': sample=event
     state=sample.get('mission_state')
+    if sample.get('visited_count',0)>last_visited:
+        # Identify the REPORTED target, not the apple nearest to the chassis.
+        # Both apples can legitimately be within arrival range simultaneously.
+        for visit in sample['visited'][last_visited:]:
+            x,y=visit['position']
+            c,s=math.cos(start_heading),math.sin(start_heading)
+            reported=[start[0]+c*x-s*y,start[1]+s*x+c*y]
+            target_errors=[math.dist(reported,a.getPosition()[:2]) for a in apples]
+            nearest=min(range(2),key=lambda i:target_errors[i])
+            if target_errors[nearest]<.35 and math.dist(p[:2],apples[nearest].getPosition()[:2])<.60:
+                physical_visits.add(nearest)
+        last_visited=sample['visited_count']
+    if now-last_truth>=1:
+        truth_file.write(json.dumps(dict(time=now,position=p,orientation=robot.getOrientation(),
+                                        contacts=contacts,closest=closest,estimated=sample.get('pose')))+'\\n')
+        truth_file.flush()
+        last_truth=now
     if state not in (None,'IDLE') and started is None: started=now
     if state in ('SUCCEEDED','FAILED','INCOMPLETE') or (started is not None and now-started>SIM_LIMIT):
         distance=math.dist(start[:2],p[:2]) if start else 999
-        checks={'mission_success':state=='SUCCEEDED','visited_both_physically':max(closest)<.60,
+        checks={'mission_success':state=='SUCCEEDED','visited_both_physically':len(physical_visits)==2,
                 'return_error':distance<.35,'no_obstacle_contacts':contacts==0}
         result=dict(passed=all(checks.values()),checks=checks,closest_m=closest,return_error_m=distance,
                     contacts=contacts,sim_time=now,elapsed=now-started,sample=sample)
         (root/'result.json').write_text(json.dumps(result,indent=2))
+        truth_file.close()
         r.simulationQuit(0)
         break
 '''
@@ -100,7 +126,7 @@ def main():
         p=subprocess.Popen([args.webots,'--batch','--mode='+('fast' if args.fast else 'realtime'),
                             '--minimize','--no-rendering','--stdout','--stderr','--port=1247',str(project/'worlds/check.wbt')],
                            stdout=out,stderr=out,**options)
-        try: p.wait(timeout=1800)
+        try: p.wait(timeout=3600)
         except subprocess.TimeoutExpired:
             if os.name=='nt': subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],capture_output=True)
             else: p.terminate()

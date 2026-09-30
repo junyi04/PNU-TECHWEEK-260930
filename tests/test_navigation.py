@@ -11,6 +11,41 @@ spec.loader.exec_module(nav)
 
 
 class NavigationTests(unittest.TestCase):
+    def test_astar_cost_matches_dijkstra_reference(self):
+        import networkx as nx
+        rng = np.random.default_rng(73)
+        for _ in range(8):
+            safe = rng.random((12, 12)) > .22
+            safe[1, 1] = safe[10, 10] = True
+            graph = nx.Graph()
+            graph.add_nodes_from(map(tuple, np.argwhere(safe)))
+            for r, c in list(graph.nodes):
+                for dr, dc in ((1, 0), (0, 1), (1, 1), (1, -1)):
+                    other = (r+dr, c+dc)
+                    if other not in graph:
+                        continue
+                    if dr and dc and not (safe[r+dr, c] and safe[r, c+dc]):
+                        continue
+                    graph.add_edge((r, c), other, weight=math.hypot(dr, dc))
+            path = nav.astar(safe, (1, 1), (10, 10))
+            try:
+                best = nx.dijkstra_path_length(graph, (1, 1), (10, 10))
+            except nx.NetworkXNoPath:
+                self.assertEqual(path, [])
+            else:
+                self.assertAlmostEqual(sum(math.dist(a, b) for a, b in zip(path, path[1:])), best)
+
+    def test_frontier_selection_accounts_for_wall_detour(self):
+        robot = nav.Navigator()
+        robot.grid = nav.GridMap(size=30)
+        robot.grid.safe[:] = True
+        robot.grid.safe[:25, 11] = False
+        start, nearby, reachable = (10, 10), (10, 12), (10, 6)
+        robot.pose[:2] = robot.grid.xy(start)
+        goal, path = robot.choose_frontier(start, [nearby, reachable])
+        self.assertEqual(goal, reachable)
+        self.assertEqual(path[-1], reachable)
+
     def test_astar_detours_and_never_crosses_blocked_corner(self):
         safe = np.ones((12, 12), dtype=bool)
         safe[0:10, 6] = False
@@ -36,6 +71,16 @@ class NavigationTests(unittest.TestCase):
         self.assertAlmostEqual(pose.pose[1], 0)
         pose.update((0, 2), None, .064)
         self.assertAlmostEqual(pose.pose[2], .066/.16)
+
+    def test_gyro_heading_is_not_biased_by_wheel_slip(self):
+        pose = nav.PoseEstimator()
+        pose.update((0, 0), .9, .1)
+        for i in range(1, 201):
+            # Wheels imply 1 rad/s, but measured body yaw is only .9 rad/s.
+            wheel = i*.1*.16/(2*.033)
+            pose.update((-wheel, wheel), .9, .1)
+        self.assertAlmostEqual(nav.wrap(pose.pose[2]-18.), 0., places=10)
+        np.testing.assert_allclose(pose.pose[:2], 0)
 
     def test_mapping_front_wall_and_inflation(self):
         grid = nav.GridMap(size=100)
