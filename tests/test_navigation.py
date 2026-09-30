@@ -11,6 +11,35 @@ spec.loader.exec_module(nav)
 
 
 class NavigationTests(unittest.TestCase):
+    def test_frontier_bound_skips_provably_worse_routes(self):
+        from unittest.mock import patch
+        robot = nav.Navigator()
+        robot.grid.safe[:] = True
+        start = robot.grid.cell(0, 0)
+        robot.pose[:2] = robot.grid.xy(start)
+        candidates = [(start[0], start[1]+i*5) for i in range(1, 17)]
+        with patch.object(nav, 'astar', wraps=nav.astar) as planner:
+            goal, path = robot.choose_frontier(start, candidates[::-1])
+            self.assertEqual(goal, candidates[0])
+            self.assertEqual(planner.call_count, 1)
+
+    def test_frontier_pruning_matches_exhaustive_score_with_obstacles(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = True
+        start = robot.grid.cell(0, 0)
+        r, c = start
+        robot.grid.safe[r-10:r+10, c+7] = False
+        candidates = [(r, c+15), (r+15, c), (r-12, c+10), (r, c-10)]
+        robot.grid.frontier_gain = dict(zip(candidates, [40, 12, 30, 5]))
+        scores = []
+        for target in candidates:
+            path = nav.astar(robot.grid.safe, start, target)
+            delta = robot.grid.xy(path[min(3, len(path)-1)])-robot.pose[:2]
+            turn = abs(nav.wrap(math.atan2(delta[1], delta[0])-robot.pose[2]))
+            score = nav.path_cost(path, robot.grid.resolution)+.12*turn-min(.8, .02*robot.grid.frontier_gain[target])
+            scores.append((score, target))
+        self.assertEqual(robot.choose_frontier(start, candidates)[0], min(scores)[1])
+
     def test_closed_loop_return_crosses_arrival_radius_and_stops(self):
         robot = nav.Navigator()
         robot.grid.safe[:] = True

@@ -4,7 +4,7 @@ Arrival thresholds are MVP choices, not official competition scoring rules.
 """
 import math
 import numpy as np
-from navigation import astar, wrap, path_cost
+from navigation import astar, astar_to_any, wrap, path_cost
 
 
 class Mission:
@@ -108,6 +108,10 @@ class Mission:
         return markers
 
     def approach_point(self, target):
+        route = self.approach_route(target)
+        return self.nav.grid.xy(route[-1]) if route else None
+
+    def approach_route(self, target):
         grid = self.nav.grid
         center = np.array(target['position'])
         start = grid.nearest_safe(grid.cell(*self.nav.pose[:2]))
@@ -123,10 +127,8 @@ class Mission:
                 sight = [grid.cell(*p) for p in np.linspace(xy, center, 12)]
                 if any(not grid.inside(c) or grid.odds[c] >= 4 for c in sight):
                     continue
-                path = astar(grid.safe, start, cell)
-                if path:
-                    candidates.append((path_cost(path, grid.resolution), grid.xy(cell)))
-        return min(candidates, key=lambda p: p[0])[1] if candidates else None
+                candidates.append(cell)
+        return astar_to_any(grid.safe, start, candidates)
 
     def select_target(self, targets, now):
         if now-self.last_selection < 1.:
@@ -134,23 +136,23 @@ class Mission:
         self.last_selection = now
         options = sorted(self.remaining(targets), key=lambda t: math.dist(t['position'], self.nav.pose[:2]))
         choices = []
-        start = self.nav.grid.nearest_safe(self.nav.grid.cell(*self.nav.pose[:2]))
         for target in options:
             if self.deferred.get(target['id'], 0) > now or self.attempts.get(target['id'], 0) >= 3:
                 continue
-            point = self.approach_point(target)
-            if point is None:
+            route = self.approach_route(target)
+            if not route:
                 self.deferred[target['id']] = now+20
                 continue
-            route = astar(self.nav.grid.safe, start, self.nav.grid.cell(*point))
-            if route:
-                choices.append((path_cost(route, self.nav.grid.resolution), target, point))
+            choices.append((path_cost(route, self.nav.grid.resolution), target, route))
         if choices:
-            _, target, point = min(choices, key=lambda c: c[0])
+            _, target, route = min(choices, key=lambda c: c[0])
+            point = self.nav.grid.xy(route[-1])
             self.active = dict(target)
             self.attempts[target['id']] = self.attempts.get(target['id'], 0)+1
             self.state, self.reason, self.since = 'APPROACH', 'target_selected', now
             self.nav.go_to(point, now)
+            self.nav.path = route
+            self.nav.last_plan = now
             return True
         return False
 
@@ -192,6 +194,15 @@ class Mission:
                         grid.safe[cell] = False
 
     def command(self, now, ranges, maximum, targets, vision_status):
+        # Completion is a mission-wide invariant, not just a VERIFY transition.
+        # Once two distinct visits are recorded, no perception/search state can
+        # divert the robot from home. Explicit operator pause still wins.
+        if len(self.visited) >= 2 and self.state not in ('PAUSED', 'SUCCEEDED'):
+            if self.state not in ('RETURN', 'RECOVER_RETURN'):
+                self.active = None
+                self.resume_goal = None
+                self.return_home(now, 'two_targets_visited')
+            self.terminal_reason = 'two_targets_visited'
         if self.state in ('IDLE', 'PAUSED', 'SUCCEEDED', 'INCOMPLETE', 'FAILED'):
             return 0., 0.
         if vision_status == 'error' and self.state not in ('RETURN', 'RECOVER_RETURN'):
