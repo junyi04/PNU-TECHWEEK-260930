@@ -1,12 +1,15 @@
-"""Stage 1: TurtleBot3Burger drive/sensor checkout (not the apple mission yet).
+"""Stages 2/3: sensor-only mapping, exploration and return (no apple detection).
 
-Run from Webots, not ordinary Python. No third-party packages are needed.
-Default: a bounded automatic checkout; use controllerArgs ["--manual"] for idle.
+Run from Webots, not ordinary Python. Install requirements.txt into its Python.
+Default: explore for 180 simulation seconds, then return to the initial pose.
+controllerArgs: ["--manual"] for idle, ["--checkout"] for the stage-1 checkout,
+or ["--explore-seconds=60"] for a shorter autonomous run.
 Click the Webots 3D view for keyboard control:
   W/S: hold to drive; A/D: hold to turn; M: manual/stop;
   Space/X: latched emergency stop; R: release into idle manual mode;
-  T: restart checkout. A motion key cancels checkout.
-Outputs (beside this script): logs/stage1_latest.jsonl and stage1_camera.png.
+  N: start/resume exploration; H: return home; T: start stage-1 checkout.
+  A motion key cancels autonomous operation but preserves the map and home.
+Outputs: logs/navigation_latest.jsonl, map_latest.png (if Display is available).
 The log is overwritten on each simulation reset. It contains sensor/command
 evidence only: encoder motion does NOT prove collision-free physical travel.
 """
@@ -58,7 +61,9 @@ def scan_geometry(ranges, maximum):
     rear = min((-x for x, y in points
                 if x < 0.0 and abs(y) <= CORRIDOR_HALF_WIDTH), default=maximum)
     around = min(math.hypot(x, y) for x, y in points)
-    return {"front": front, "rear": rear, "around": around}
+    left = min((y for x, y in points if y >= 0 and abs(x) <= CORRIDOR_HALF_WIDTH), default=maximum)
+    right = min((-y for x, y in points if y < 0 and abs(x) <= CORRIDOR_HALF_WIDTH), default=maximum)
+    return {"front": front, "rear": rear, "left": left, "right": right, "around": around}
 
 
 def protect_motion(linear, angular, scan):
@@ -154,14 +159,14 @@ class Checkout:
 
 
 class EventLog:
-    def __init__(self):
+    def __init__(self, name="stage1"):
         self.file = None
         try:
             self.directory = Path(__file__).resolve().parent / "logs"
             self.directory.mkdir(exist_ok=True)
-            self.file = (self.directory / "stage1_latest.jsonl").open("w", encoding="utf-8")
+            self.file = (self.directory / f"{name}_latest.jsonl").open("w", encoding="utf-8")
         except OSError as exc:
-            print(f"[stage1] File logging unavailable: {exc}", flush=True)
+            print(f"[robot] File logging unavailable: {exc}", flush=True)
 
     def write(self, event, **values):
         record = {"event": event, **values}
@@ -173,7 +178,14 @@ class EventLog:
                 self.file.close()
                 self.file = None
         if event != "sample":
-            print("[stage1] " + json.dumps(record), flush=True)
+            print("[robot] " + json.dumps(record), flush=True)
+        else:
+            scan = values["scan"]
+            wheels = values["encoders"]
+            print(f"[robot] t={values['time']:.1f} {values['state']} "
+                  f"LiDAR F/B/L/R={scan['front']:.2f}/{scan['rear']:.2f}/"
+                  f"{scan['left']:.2f}/{scan['right']:.2f}m "
+                  f"enc={wheels[0]:.2f}/{wheels[1]:.2f}rad", flush=True)
 
     def close(self):
         if self.file:
@@ -183,18 +195,22 @@ class EventLog:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manual", action="store_true", help="start stationary in manual mode")
+    parser.add_argument("--checkout", action="store_true", help="run the stage-1 drive checkout")
+    parser.add_argument("--explore-seconds", type=float, default=180,
+                        help="exploration budget in simulation seconds, then return")
     args = parser.parse_args()
+    if not math.isfinite(args.explore_seconds) or args.explore_seconds <= 0:
+        parser.error("--explore-seconds must be a finite positive number")
     from controller import Robot, Keyboard
 
     robot = Robot()  # deliberately not Supervisor: no ground-truth pose access
-    log = EventLog()
+    log = EventLog("stage1" if args.checkout else "navigation")
     motors = []
     try:
         timestep = int(robot.getBasicTimeStep())
         devices = {robot.getDeviceByIndex(i).getName(): robot.getDeviceByIndex(i)
                    for i in range(robot.getNumberOfDevices())}
-        required = ("left wheel motor", "right wheel motor", "LDS-01", "camera",
-                    "gyro", "accelerometer", "compass")
+        required = ("left wheel motor", "right wheel motor", "LDS-01")
         missing = [name for name in required if name not in devices]
         if missing:
             raise RuntimeError("Missing robot devices: " + ", ".join(missing))
@@ -206,21 +222,28 @@ def main():
             motor.setPosition(float("inf"))
             motor.setVelocity(0.0)
         lidar = devices["LDS-01"]
-        camera = devices["camera"]
-        gyro = devices["gyro"]
-        accelerometer = devices["accelerometer"]
-        compass = devices["compass"]
-        for sensor in [*encoders, lidar, gyro, accelerometer, compass]:
+        camera = devices.get("camera")
+        gyro = devices.get("gyro")
+        accelerometer = devices.get("accelerometer")
+        for sensor in [*encoders, lidar, gyro, accelerometer]:
+            if sensor is None:
+                continue
             sensor.enable(timestep)
-        camera.enable(timestep * 3)
+        if camera:
+            camera.enable(timestep * 3)
         keyboard = robot.getKeyboard()
         keyboard.enable(timestep)
         limit = min(motor.getMaxVelocity() for motor in motors)
+        navigator = None
+        if not args.checkout:
+            from navigation import Navigator
+            navigator = Navigator(args.explore_seconds)
+        display = devices.get("map")
         log.write("startup", timestep_ms=timestep, devices=sorted(devices),
-                  camera=[camera.getWidth(), camera.getHeight()],
+                  camera=[camera.getWidth(), camera.getHeight()] if camera else None,
                   lidar_points=lidar.getHorizontalResolution(),
-                  mode="manual" if args.manual else "checkout")
-        print("[stage1] T=checkout M=manual WASD=hold to move SPACE/X=STOP R=release", flush=True)
+                  mode="manual" if args.manual else "checkout" if args.checkout else "explore")
+        print("[robot] N=explore H=home T=checkout M=manual WASD=move SPACE/X=STOP R=release", flush=True)
         ready = False
         estop = False
         checkout = None
@@ -229,18 +252,22 @@ def main():
         last_sample = -1.0
         previous_status = None
         previous_keys = set()
+        last_render = -10.0
+        last_time = robot.getTime()
         while robot.step(timestep) != -1:
             now = robot.getTime()
+            dt, last_time = now-last_time, now
             positions = tuple(sensor.getValue() for sensor in encoders)
-            inertial = {"gyro": gyro.getValues(), "accel": accelerometer.getValues(),
-                        "compass": compass.getValues()}
-            camera_data = camera.getImage()
+            inertial = {name: sensor.getValues() for name, sensor in
+                        (("gyro", gyro), ("accel", accelerometer)) if sensor is not None}
+            gyro_z = inertial.get("gyro", [0, 0, None])[2]
+            if gyro_z is not None and not math.isfinite(gyro_z):
+                gyro_z = None
+            inertial = {k: [v if math.isfinite(v) else None for v in values]
+                        for k, values in inertial.items()}
             ranges = lidar.getRangeImage()
             scan = scan_geometry(ranges, lidar.getMaxRange())
             sensors_ok = (all(math.isfinite(v) for v in positions) and
-                          all(math.isfinite(v) for values in inertial.values() for v in values) and
-                          camera_data is not None and
-                          len(camera_data) == camera.getWidth() * camera.getHeight() * 4 and
                           scan is not None)
             keys = set()
             key = keyboard.getKey()
@@ -261,6 +288,8 @@ def main():
             if ord("M") in keys:
                 checkout = None
                 auto_start = False
+            if navigator and (ord("M") in keys or ord("R") in new_keys or estop):
+                navigator.set_mode("MANUAL", now)
             if not sensors_ok:
                 for motor in motors:
                     motor.setVelocity(0.0)
@@ -268,6 +297,8 @@ def main():
                     estop = True
                     checkout = None
                     auto_start = False
+                    if navigator:
+                        navigator.set_mode("MANUAL", now)
                 if previous_status != "SENSOR_NOT_READY":
                     log.write("state", time=now, state="SENSOR_NOT_READY")
                     previous_status = "SENSOR_NOT_READY"
@@ -275,19 +306,33 @@ def main():
             if not ready and now - started >= 0.5:
                 ready = True
                 log.write("sensors_ready", time=now, scan=scan, encoders=positions)
-                if log.file:
+                if log.file and camera and camera.getImage() is not None:
                     result = camera.saveImage(str(log.directory / "stage1_camera.png"), 90)
                     log.write("camera_snapshot", time=now, saved=result == 0)
             if not ready:
                 continue
-            if not estop and (auto_start or ord("T") in new_keys):
+            if navigator:
+                navigator.observe(positions, gyro_z,
+                                  ranges, lidar.getMaxRange(), now, dt)
+            if not estop and (ord("T") in new_keys or (auto_start and args.checkout)):
                 checkout = Checkout(now, positions)
                 auto_start = False
+                if navigator:
+                    navigator.set_mode("MANUAL", now)
                 log.write("checkout_started", time=now)
+            if navigator and not estop:
+                if auto_start or ord("N") in new_keys:
+                    navigator.set_mode("EXPLORE", now)
+                    checkout, auto_start = None, False
+                elif ord("H") in new_keys:
+                    navigator.set_mode("RETURN", now)
+                    checkout, auto_start = None, False
             motion_keys = keys.intersection({ord(c) for c in "WASD"})
             if motion_keys:
                 checkout = None
                 auto_start = False
+                if navigator:
+                    navigator.set_mode("MANUAL", now)
             linear = angular = 0.0
             mode = "MANUAL_IDLE"
             if estop:
@@ -295,6 +340,9 @@ def main():
             elif checkout:
                 linear, angular = checkout.command(now, positions, scan)
                 mode = checkout.phase
+            elif navigator and navigator.mode != "MANUAL":
+                linear, angular = navigator.command(now, ranges, lidar.getMaxRange())
+                mode = navigator.mode
             elif motion_keys:
                 # Separate translation and rotation in this basic checkout.
                 if ord("W") in keys and ord("S") not in keys:
@@ -316,10 +364,18 @@ def main():
                           encoders=positions, wheels=speeds,
                           result=checkout.result if checkout else None)
                 previous_status = status
-            if now - last_sample >= 0.5:
+            if now - last_sample >= 1.0:
                 log.write("sample", time=now, state=mode, scan=scan, encoders=positions,
-                          wheels=speeds, **inertial)
+                          wheels=speeds, **inertial,
+                          **(navigator.telemetry() if navigator else {}))
                 last_sample = now
+            if navigator and display and now-last_render >= 2.0:
+                navigator.render(display)
+                if log.file:
+                    picture = display.imageCopy(0, 0, display.getWidth(), display.getHeight())
+                    display.imageSave(picture, str(log.directory / "map_latest.png"))
+                    display.imageDelete(picture)
+                last_render = now
     except Exception as exc:
         log.write("error", message=str(exc))
         raise

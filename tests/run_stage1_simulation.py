@@ -34,6 +34,7 @@ DEF TEST_ROBOT TurtleBot3Burger {
   translation 0 0 0
   rotation 0 0 1 0
   controller "apple_collector"
+  controllerArgs [ "--checkout" ]
   extensionSlot [
     Camera { translation 0.05 0 -0.08 fieldOfView 1.0472 width 640 height 480 }
     RobotisLds01 { }

@@ -944,6 +944,11 @@ TurtleBot3Burger {
   rotation 0 0 1 3.14159
   controller "apple_collector"
   extensionSlot [
+    Display {
+      name "map"
+      width 480
+      height 480
+    }
     Camera {
       translation 0.05 0 -0.08
       fieldOfView 1.0472
