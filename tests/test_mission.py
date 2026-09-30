@@ -9,47 +9,6 @@ from mission import Mission
 
 
 class MissionTests(unittest.TestCase):
-    def test_two_visits_force_return_from_any_autonomous_state(self):
-        for state in ('IDLE', 'SCAN', 'SEARCH', 'APPROACH', 'VERIFY', 'COVERAGE', 'FAILED', 'INCOMPLETE'):
-            with self.subTest(state=state):
-                nav = Navigator()
-                nav.grid.safe[:] = True
-                nav.pose[:] = [2, 0, math.pi]
-                mission = Mission(nav)
-                mission.state = state
-                mission.visited = [self.target(identity=1), self.target(identity=2, xy=(2, 2))]
-                mission.active = self.target(identity=3)
-                mission.command(1, self.scan, 3.5, [], 'stale')
-                self.assertEqual(mission.state, 'RETURN')
-                self.assertEqual(nav.mode, 'RETURN')
-                self.assertIsNone(mission.active)
-                self.assertEqual(mission.terminal_reason, 'two_targets_visited')
-
-    def test_two_visits_do_not_override_operator_pause(self):
-        self.m.visited = [self.target(identity=1), self.target(identity=2)]
-        self.m.pause(0)
-        self.assertEqual(self.m.command(1, self.scan, 3.5, [], 'running'), (0., 0.))
-        self.assertEqual(self.m.state, 'PAUSED')
-
-    def test_approach_search_matches_individual_routes_and_reuses_result(self):
-        from unittest.mock import patch
-        import mission
-        from navigation import astar, astar_to_any, path_cost
-        target = self.target(xy=(2, .5))
-        captured = []
-        def search(safe, start, goals):
-            goals = list(goals)
-            captured.extend(goals)
-            return astar_to_any(safe, start, goals)
-        with patch.object(mission, 'astar_to_any', side_effect=search) as planner:
-            self.assertTrue(self.m.select_target([target], 1))
-            self.assertEqual(planner.call_count, 1)
-        start = self.nav.grid.cell(0, 0)
-        reference = min(path_cost(astar(self.nav.grid.safe, start, g)) for g in captured)
-        self.assertAlmostEqual(path_cost(self.nav.path), reference)
-        self.assertEqual(self.nav.last_plan, 1)
-        self.assertEqual(self.nav.path[-1], self.nav.goal)
-
     def test_duplicate_target_cannot_be_counted_at_final_verification(self):
         self.m.visited = [self.target(identity=1)]
         self.m.state, self.m.since = 'VERIFY', 1

@@ -388,22 +388,13 @@ class Navigator:
 
     def choose_frontier(self, start, candidates):
         best = None
-        if start is None:
-            return None, []
-        gains = getattr(self.grid, 'frontier_gain', {})
-        # A lower bound on the exact score lets us skip candidates that cannot
-        # beat the best route, without changing the scoring policy.
-        ranked = sorted((math.dist(start, target)*self.grid.resolution-
-                         min(.8, .02*gains.get(target, 0)), target) for target in candidates)
-        for lower_bound, target in ranked:
-            if best is not None and lower_bound > best[0]:
-                break
+        for target in candidates:
             path = astar(self.grid.safe, start, target)
             if not path:
                 continue
             delta = self.grid.xy(path[min(3, len(path)-1)])-self.pose[:2]
             turn = abs(wrap(math.atan2(delta[1], delta[0])-self.pose[2]))
-            gain = gains.get(target, 0)
+            gain = getattr(self.grid, 'frontier_gain', {}).get(target, 0)
             score = path_cost(path, self.grid.resolution) + .12*turn - min(.8, .02*gain)
             if best is None or score < best[0]:
                 best = score, target, path
