@@ -30,6 +30,9 @@ class PerceptionTests(unittest.TestCase):
         for time in (1, 1.4, 1.8):
             tracker.update(detections, time)
         self.assertEqual(len(tracker.confirmed), 2)
+        first, second = tracker.confirmed
+        self.assertIn(second['id'], first['distinct_from'])
+        self.assertIn(first['id'], second['distinct_from'])
 
     def test_colors(self):
         for color, accepted in [((0, 0, 220), True), ((0, 220, 0), False),

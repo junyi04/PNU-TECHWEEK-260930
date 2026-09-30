@@ -623,9 +623,13 @@ class Navigator:
             display.drawLine(*screen(self.grid.xy(a)), *screen(self.grid.xy(b)))
         display.setColor(0xFF8800)
         for target in getattr(self, 'targets', []):
+            status = target.get('status', 'candidate')
+            display.setColor(0x16A34A if status == 'visited' else
+                             0x888888 if status == 'ambiguous_revisit' else 0xFF8800)
             tx, ty = screen(target['position'])
             display.drawOval(tx, ty, 7, 7)
-            display.drawText(f"apple {target['id']}", tx+8, ty)
+            label = 'visited' if status == 'visited' else 'recheck' if status == 'ambiguous_revisit' else 'apple'
+            display.drawText(f"{label} {target['id']}", tx+8, ty)
         display.setColor(0x16A34A)
         x, y = screen((0, 0))
         display.fillOval(x, y, 5, 5)

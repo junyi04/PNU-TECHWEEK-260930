@@ -104,6 +104,10 @@ class TargetTracker:
                 self.tracks.append(t)
             t['last_position'] = list(xy)
             used.add(t['id'])
+        # Separate boxes observed together are evidence of distinct objects.
+        for t in self.tracks:
+            if t['id'] in used:
+                t['distinct_from'] = sorted(set(t.get('distinct_from', [])) | (used-{t['id']}))
 
 
 def _latest(queue, value):

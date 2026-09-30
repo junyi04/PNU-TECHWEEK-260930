@@ -49,7 +49,9 @@ class MissionTests(unittest.TestCase):
             self.m.verify_frames = []
             self.nav.pose[2] = math.atan2(xy[1], xy[0])
             for now in (5*identity+.1, 5*identity+.3, 5*identity+.6):
-                self.m.command(now, self.scan, 3.5, [self.target(now, identity, xy)], 'running')
+                target = self.target(now, identity, xy)
+                target['distinct_from'] = [3-identity]
+                self.m.command(now, self.scan, 3.5, [target], 'running')
         self.assertEqual(len(self.m.visited), 2)
         self.assertEqual(self.m.state, 'RETURN')
         self.m.command(12, self.scan, 3.5, [], 'running')
@@ -73,8 +75,20 @@ class MissionTests(unittest.TestCase):
 
     def test_target_exclusion_and_nearby_distinct_target(self):
         self.m.visited = [self.target()]
-        self.assertEqual(len(self.m.remaining([self.target(identity=2, xy=(.43, .4))])), 1)
+        separate = self.target(identity=2, xy=(.43, .4))
+        separate['distinct_from'] = [1]
+        self.assertEqual(len(self.m.remaining([separate])), 1)
         self.assertEqual(self.m.remaining([self.target(identity=2)]), [])
+
+    def test_revisit_shift_is_uncertain_not_a_second_apple(self):
+        self.m.visited = [self.target()]
+        duplicate = self.target(identity=7, xy=(.88, 0))
+        self.assertEqual(self.m.remaining([duplicate]), [])
+        markers = self.m.map_targets([self.target(), duplicate])
+        self.assertEqual([m['status'] for m in markers], ['visited', 'ambiguous_revisit'])
+        self.assertEqual(len(self.m.visited), 1)
+        duplicate['distinct_from'] = [1]
+        self.assertEqual(self.m.remaining([duplicate]), [duplicate])
 
     def test_optional_deadline_is_incomplete_return(self):
         self.nav.limit = 10

@@ -82,9 +82,30 @@ class Mission:
         self.nav.goal = self.resume_goal
         self.resume_goal = None
 
+    def target_status(self, target):
+        if any(target['id'] == visit['id'] for visit in self.visited):
+            return 'visited'
+        for visit in self.visited:
+            distinct = (visit['id'] in target.get('distinct_from', []) or
+                        target['id'] in visit.get('distinct_from', []))
+            if not distinct:
+                distance = math.dist(target['position'], visit['position'])
+                if distance < .30:
+                    return 'visited'
+                if distance < .65:
+                    return 'ambiguous_revisit'
+        return 'candidate'
+
     def remaining(self, targets):
-        return [t for t in targets if not any(t['id'] == v['id'] or
-                math.dist(t['position'], v['position']) < .30 for v in self.visited)]
+        return [t for t in targets if self.target_status(t) == 'candidate']
+
+    def map_targets(self, targets):
+        # Draw each confirmed visit once at its recorded position. Do not draw
+        # another orange apple for aliases or uncertain re-observations nearby.
+        markers = [dict(v, status='visited') for v in self.visited]
+        markers.extend(dict(t, status=self.target_status(t)) for t in targets
+                       if self.target_status(t) != 'visited')
+        return markers
 
     def approach_point(self, target):
         grid = self.nav.grid
@@ -246,6 +267,7 @@ class Mission:
                     self.abandon_target(now, 'already_visited_target')
                     return 0., 0.
                 self.visited.append(dict(id=target['id'], position=target['position'], time=now,
+                                         distinct_from=list(target.get('distinct_from', [])),
                                          source=target.get('source'), observed_distance=target['observed_distance']))
                 self.active = None
                 if len(self.visited) >= 2:

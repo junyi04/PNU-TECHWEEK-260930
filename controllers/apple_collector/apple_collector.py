@@ -456,6 +456,8 @@ def main():
                     last_mission_status = mission_status
                 navigator.mission_label = f'{mission.state} | visited {len(mission.visited)}/2'
             if navigator and display and now-last_render >= 2.0:
+                if mission and vision:
+                    navigator.targets = mission.map_targets(vision.tracker.confirmed)
                 navigator.render(display)
                 if log.file:
                     picture = display.imageCopy(0, 0, display.getWidth(), display.getHeight())
