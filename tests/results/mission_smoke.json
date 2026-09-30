@@ -7,97 +7,89 @@
     "no_obstacle_contacts": true
   },
   "closest_m": [
-    0.48101323518061256,
-    0.49677961539278287
+    0.41874558609489215,
+    0.26399412037287456
   ],
-  "return_error_m": 0.15835416592734444,
+  "return_error_m": 0.1594502292625656,
   "contacts": 0,
-  "sim_time": 31.296,
-  "elapsed": 10.303999999999998,
+  "sim_time": 186.88,
+  "elapsed": 66.496,
   "sample": {
     "event": "sample",
-    "time": 31.232,
+    "time": 186.88,
     "state": "SUCCEEDED",
     "scan": {
       "front": 3.5,
-      "rear": 1.7780158945705864,
+      "rear": 1.8438077189936384,
       "left": 3.5,
       "right": 3.5,
-      "around": 1.7845807876937778
+      "around": 1.8067809521398328
     },
     "encoders": [
-      16.15216,
-      -1.06132
+      -0.49612,
+      48.8584
     ],
     "wheels": [
       0.0,
       0.0
     ],
     "gyro": [
-      0.00011071028764135522,
-      -0.0006845831484921083,
-      0.0007421188500821881
+      -8.525490915745732e-08,
+      -0.00010310965241330901,
+      1.0147470171747223e-06
     ],
     "accel": [
-      0.09009156688379567,
-      -0.00010923721596256585,
-      9.809632428491767
+      0.09166271747833196,
+      -0.00019520001789161416,
+      9.809578230159637
     ],
     "vision_status": "running",
     "vision_device": "cpu",
     "red_apples": 2,
     "mission_state": "SUCCEEDED",
     "mission_reason": "two_targets_visited",
-    "recovery_count": 0,
     "scan_count": 2,
     "visited_count": 2,
     "visited": [
       {
-        "id": 2,
-        "position": [
-          0.6525516606890367,
-          0.20199077067930382
-        ],
-        "time": 24.32,
-        "distinct_from": [
-          1
-        ],
-        "source": "appearance_candidate",
-        "observed_distance": 0.5040718724087598
-      },
-      {
         "id": 1,
         "position": [
-          0.6564149688856145,
-          -0.20589609152374885
+          0.6500043670679332,
+          -0.20656619337191662
         ],
-        "time": 26.560000000000002,
-        "distinct_from": [
-          2
-        ],
+        "time": 145.40800000000002,
         "source": "appearance_candidate",
-        "observed_distance": 0.5077594027991306
+        "observed_distance": 0.5075593282596761
+      },
+      {
+        "id": 2,
+        "position": [
+          0.6422231843348096,
+          0.20496229254496934
+        ],
+        "time": 178.68800000000002,
+        "source": "appearance_candidate",
+        "observed_distance": 0.4835019374635253
       }
     ],
     "active_target": null,
     "pose": [
-      0.15853887644521672,
-      0.014109900520957881,
-      3.0378556848962397
+      0.13079723857970751,
+      -0.08834612794845069,
+      2.861388232792539
     ],
     "nav_mode": "HOME",
     "reason": "within_16cm_of_estimated_start",
-    "home_distance_m": 0.1591655259069093,
+    "home_distance_m": 0.15783838552000254,
     "return_plan_failure": null,
     "return_route_kind": "home",
-    "waiting_for_obstacle": false,
-    "mapped_m2": 35.2256,
-    "distance_m": 0.25335090000000005,
+    "mapped_m2": 36.8192,
+    "distance_m": 0.8249188200000044,
     "frontiers_reached": 0,
     "scan_corrections": 0,
     "goal": [
-      0.120000000000001,
-      0.03999999999999915
+      -0.03999999999999915,
+      -0.03999999999999915
     ]
   }
 }
