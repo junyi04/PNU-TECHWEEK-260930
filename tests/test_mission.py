@@ -115,6 +115,38 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.m.command(1, self.scan, 3.5, [], 'running'), (.12, 0.))
         self.assertEqual(self.m.state, 'SEARCH')
 
+    def test_exhaustion_with_one_visit_retries_instead_of_returning(self):
+        from unittest.mock import Mock
+        self.m.state = 'SEARCH'
+        self.m.visited = [self.target()]
+        self.m.exhaustions = 4
+        self.m.attempts = {2: 3}
+        self.m.coverage_point = Mock(return_value=None)
+        self.nav.mode, self.nav.reason = 'RETURN', 'no_reachable_frontiers'
+        self.nav.command = Mock(return_value=(0., 0.))
+        self.m.command(10, self.scan, 3.5, [], 'running')
+        self.assertEqual(self.m.state, 'SCAN')
+        self.assertEqual(len(self.m.visited), 1)
+        self.assertEqual(self.m.attempts, {})
+
+    def test_failed_return_recovers_and_completes_only_at_home(self):
+        from unittest.mock import Mock
+        self.m.visited = [self.target(), self.target(identity=2)]
+        self.m.return_home(0, 'two_targets_visited')
+        self.nav.pose[0] = 2.
+        self.nav.command = Mock(return_value=(0., 0.))
+        self.nav.mode, self.nav.reason = 'STOPPED', 'path_unavailable'
+        self.m.command(21, self.scan, 3.5, [], 'running')
+        self.assertEqual(self.m.state, 'RECOVER_RETURN')
+        self.assertEqual(self.m.command(22, [.1]*360, 3.5, [], 'running'), (0., 0.))
+        self.assertEqual(self.m.command(23, self.scan, 3.5, [], 'running'), (0., .25))
+        self.m.command(29, self.scan, 3.5, [], 'running')
+        self.assertEqual(self.m.state, 'RETURN')
+        self.assertEqual(self.nav.mode, 'RETURN')
+        self.nav.mode = 'HOME'
+        self.m.command(30, self.scan, 3.5, [], 'running')
+        self.assertEqual(self.m.state, 'SUCCEEDED')
+
 
 if __name__ == '__main__':
     unittest.main()

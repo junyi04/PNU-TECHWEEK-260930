@@ -1,0 +1,83 @@
+{
+  "passed": false,
+  "checks": {
+    "mission_success": false,
+    "visited_both_physically": false,
+    "return_error": false,
+    "no_obstacle_contacts": false
+  },
+  "closest_m": [
+    0.418307328359635,
+    0.23448163029490818
+  ],
+  "return_error_m": 7.606434763929112,
+  "contacts": 2,
+  "sim_time": 305.472,
+  "elapsed": 180.03199999999998,
+  "sample": {
+    "event": "sample",
+    "time": 287.232,
+    "state": "EMERGENCY_STOP",
+    "scan": {
+      "front": 3.5,
+      "rear": 3.5,
+      "left": 3.5,
+      "right": 3.5,
+      "around": 1.941161313116667
+    },
+    "encoders": [
+      202.53,
+      240.7438
+    ],
+    "wheels": [
+      0.0,
+      0.0
+    ],
+    "gyro": [
+      -5.231559448792788,
+      4.636932433987758,
+      -5.151557594281636
+    ],
+    "accel": [
+      0.6575880865076897,
+      0.0077018500312094895,
+      -1.3390899382514723
+    ],
+    "vision_status": "running",
+    "vision_device": "cpu",
+    "red_apples": 2,
+    "mission_state": "PAUSED",
+    "mission_reason": "operator_pause",
+    "recovery_count": 0,
+    "scan_count": 3,
+    "visited_count": 1,
+    "visited": [
+      {
+        "id": 1,
+        "position": [
+          0.6496190473323014,
+          -0.20610793018960663
+        ],
+        "time": 150.336,
+        "source": "appearance_candidate",
+        "observed_distance": 0.5073728241553838
+      }
+    ],
+    "active_target": null,
+    "pose": [
+      2.584761674581358,
+      1.5735446318117754,
+      -0.21333145589397695
+    ],
+    "nav_mode": "MANUAL",
+    "reason": "requested",
+    "home_distance_m": 3.0260594215395513,
+    "return_plan_failure": null,
+    "return_route_kind": null,
+    "mapped_m2": 70.9504,
+    "distance_m": 7.354429499999973,
+    "frontiers_reached": 0,
+    "scan_corrections": 0,
+    "goal": null
+  }
+}

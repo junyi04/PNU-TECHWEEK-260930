@@ -28,6 +28,23 @@ class Mission:
         self.vision_wait_since = None
         self.resume_goal = None
         self.scan_count = 0
+        self.recovery_count = 0
+
+    def recover_return(self, now):
+        self.state, self.reason = 'RECOVER_RETURN', 'refresh_return_map'
+        self.since = now
+        self.recovery_count += 1
+        self.nav.set_mode('MANUAL', now)
+
+    def retry_search(self, now):
+        # Revisit known areas instead of treating a temporarily exhausted map
+        # or three unsuccessful approaches as the end of the mission.
+        self.exhaustions += 1
+        self.nav.blacklist = []
+        self.scanned = []
+        self.attempts = {}
+        self.begin_scan(now)
+        self.reason = 'retry_unfinished_search'
 
     def pause(self, now):
         self.state, self.reason = 'PAUSED', 'operator_pause'
@@ -156,9 +173,9 @@ class Mission:
     def command(self, now, ranges, maximum, targets, vision_status):
         if self.state in ('IDLE', 'PAUSED', 'SUCCEEDED', 'INCOMPLETE', 'FAILED'):
             return 0., 0.
-        if vision_status == 'error' and self.state != 'RETURN':
+        if vision_status == 'error' and self.state not in ('RETURN', 'RECOVER_RETURN'):
             self.return_home(now, 'vision_unavailable')
-        if vision_status in ('loading', 'stale') and self.state != 'RETURN':
+        if vision_status in ('loading', 'stale') and self.state not in ('RETURN', 'RECOVER_RETURN'):
             if self.vision_wait_since is None:
                 self.vision_wait_since = now
             if now-self.vision_wait_since < 30:
@@ -166,16 +183,26 @@ class Mission:
             self.return_home(now, 'vision_timeout')
         else:
             self.vision_wait_since = None
-        if self.started is not None and now-self.started >= self.nav.limit and self.state != 'RETURN':
+        if self.started is not None and now-self.started >= self.nav.limit and self.state not in ('RETURN', 'RECOVER_RETURN'):
             self.return_home(now, 'explicit_time_limit')
         self.protect_targets(targets)
+        if self.state == 'RECOVER_RETURN':
+            if now-self.since >= 8:
+                self.state, self.reason = 'RETURN', 'retry_return_route'
+                self.nav.set_mode('RETURN', now)
+                return 0., 0.
+            # Only rotate with clearance in every direction. A blocked robot
+            # keeps sensing and replanning; never drive blindly through a wall.
+            clearance = min((r for r in ranges if math.isfinite(r)), default=maximum)
+            return (0., .25) if clearance > .24 else (0., 0.)
         if self.state == 'RETURN':
             command = self.nav.command(now, ranges, maximum)
             if self.nav.mode == 'HOME':
                 self.state = 'SUCCEEDED' if len(self.visited) == 2 and self.terminal_reason == 'two_targets_visited' else 'INCOMPLETE'
                 self.reason = self.terminal_reason
             elif self.nav.mode == 'STOPPED':
-                self.state, self.reason = 'FAILED', self.nav.reason
+                self.recover_return(now)
+                return 0., 0.
             return command
         if self.state in ('SEARCH', 'SCAN', 'COVERAGE') and self.select_target(targets, now):
             return 0., 0.
@@ -242,20 +269,16 @@ class Mission:
                 if point is not None:
                     self.state, self.reason = 'COVERAGE', 'inspect_mapped_area'
                     self.nav.go_to(point, now)
-                elif self.exhaustions < 1:
-                    self.exhaustions += 1
-                    self.nav.blacklist = []
-                    self.begin_scan(now)
                 else:
-                    reason = 'targets_unreachable_or_unconfirmed' if self.remaining(targets) else 'targets_not_found'
-                    self.return_home(now, reason)
+                    self.retry_search(now)
             elif self.nav.mode == 'STOPPED':
-                self.return_home(now, 'exploration_stalled')
+                self.retry_search(now)
             return command
         return 0., 0.
 
     def telemetry(self):
         return dict(mission_state=self.state, mission_reason=self.reason,
+                    recovery_count=self.recovery_count,
                     scan_count=self.scan_count,
                     visited_count=len(self.visited), visited=self.visited,
                     active_target=self.active['id'] if self.active else None)
