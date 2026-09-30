@@ -9,6 +9,15 @@ from mission import Mission
 
 
 class MissionTests(unittest.TestCase):
+    def test_duplicate_target_cannot_be_counted_at_final_verification(self):
+        self.m.visited = [self.target(identity=1)]
+        self.m.state, self.m.since = 'VERIFY', 1
+        self.m.active = self.target(identity=2)
+        for now in (2, 2.4, 2.8):
+            self.m.command(now, self.scan, 3.5, [self.target(now, identity=2)], 'running')
+        self.assertEqual(len(self.m.visited), 1)
+        self.assertNotEqual(self.m.state, 'RETURN')
+
     def setUp(self):
         self.nav = Navigator()
         self.nav.grid.safe[:] = True

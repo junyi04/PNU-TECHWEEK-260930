@@ -69,6 +69,7 @@ class GridMap:
         self.visits = np.zeros((size, size), dtype=np.uint16)
         self.free = np.zeros_like(self.odds, dtype=bool)
         self.safe = self.free.copy()
+        self.clear_streak = np.zeros_like(self.odds, dtype=np.uint8)
         self.match_corrections = 0
 
     def cell(self, x, y):
@@ -154,6 +155,15 @@ class GridMap:
         flat[free_ids] = np.maximum(-20, flat[free_ids] - 2)
         r, c = self.indices(origin + unit[hit] * lengths[hit, None])
         hit_ids = np.unique(r * self.size + c)
+        # Only repeated, directly observed free rays erase an old obstacle.
+        # Unseen/occluded cells and current hit endpoints never age into free.
+        clear_ids = np.setdiff1d(free_ids, hit_ids, assume_unique=True)
+        streak = self.clear_streak.ravel()
+        previous = streak[clear_ids].copy()
+        streak[:] = 0
+        streak[clear_ids] = np.minimum(previous, 2) + 1
+        confirmed_clear = clear_ids[streak[clear_ids] >= 3]
+        flat[confirmed_clear] = np.minimum(flat[confirmed_clear], -2)
         flat[hit_ids] = np.minimum(30, np.maximum(0, flat[hit_ids]) + 8)
         # The actually occupied robot footprint has been physically traversed.
         center = self.cell(*pose[:2])
@@ -323,6 +333,9 @@ class Navigator:
         self.target_xy = None
         self.return_plan_failure = None
         self.return_route_kind = None
+        self.obstacle_wait_since = None
+        self.obstacle_wait_cooldown = 0.
+        self.return_recovery_seen = set()
 
     @property
     def pose(self):
@@ -338,6 +351,8 @@ class Navigator:
         self.last_real_progress = now
         self.progress_position = self.pose[:2].copy()
         self.no_route_since = None
+        self.obstacle_wait_since = None
+        self.obstacle_wait_cooldown = now
         if mode == "EXPLORE":
             self.started = now
 
@@ -379,6 +394,7 @@ class Navigator:
         All endpoints must satisfy the existing arrival radius. Never clear
         obstacles or unknown cells to manufacture a return route.
         """
+        previous_goal = self.goal if self.return_route_kind == 'recorded_backtrack' else None
         self.path, self.goal = [], None
         self.return_route_kind = None
         if start is None:
@@ -400,6 +416,12 @@ class Navigator:
                 self.path, self.goal = path, cell
                 self.return_plan_failure = None
                 self.return_route_kind = 'home'
+                return
+        if previous_goal is not None and np.linalg.norm(self.grid.xy(previous_goal)-self.pose[:2]) >= .22:
+            path = astar(self.grid.safe, start, previous_goal)
+            if path:
+                self.path, self.goal = path, previous_goal
+                self.return_route_kind = 'recorded_backtrack'
                 return
         # A long run can temporarily obscure home in the map. Get closer via
         # an earlier observed waypoint, but ONLY along currently safe A* cells.
@@ -428,6 +450,23 @@ class Navigator:
                 return
             if len(spaced) >= 24:
                 break
+        # A U-shaped route can require moving AWAY from home first. Restricting
+        # recovery to smaller Euclidean distance traps the robot in such rooms.
+        checked = 0
+        for xy in reversed(self.trace):
+            cell = self.grid.cell(*xy)
+            if (cell in self.return_recovery_seen or not self.grid.inside(cell)
+                    or not self.grid.safe[cell] or math.dist(xy, self.pose[:2]) < .5):
+                continue
+            checked += 1
+            path = astar(self.grid.safe, start, cell)
+            if path:
+                self.path, self.goal = path, cell
+                self.return_recovery_seen.add(cell)
+                self.return_route_kind = 'recorded_backtrack'
+                return
+            if checked >= 24:
+                break
 
     def command(self, now, ranges, maximum):
         if self.mode not in ("EXPLORE", "RETURN", "TARGET"):
@@ -446,6 +485,27 @@ class Navigator:
         if not self.grid.inside(self.grid.cell(*self.pose[:2])):
             self.mode, self.reason = "STOPPED", "map_boundary"
             return 0.0, 0.0
+        # Keep the destination while a newly blocked near route may clear.
+        # Bounded waiting applies equally to search, approach and return.
+        if self.path:
+            closest = min(range(min(len(self.path), 15)),
+                          key=lambda i: np.linalg.norm(self.grid.xy(self.path[i])-self.pose[:2]))
+            nearby = self.path[closest:closest+13]
+            blocked = any(not self.grid.safe[p] for p in nearby)
+            if blocked and (self.obstacle_wait_since is not None or now >= self.obstacle_wait_cooldown):
+                if self.obstacle_wait_since is None:
+                    self.obstacle_wait_since = now
+                if now-self.obstacle_wait_since < 3.:
+                    self.reason = 'waiting_for_obstacle'
+                    return 0., 0.
+                self.obstacle_wait_since = None
+                self.obstacle_wait_cooldown = now+6.
+                self.path = []
+                self.last_plan = -100.
+            elif not blocked and self.obstacle_wait_since is not None:
+                self.obstacle_wait_since = None
+                self.last_plan = now
+                self.reason = 'obstacle_cleared_resume'
         if np.linalg.norm(self.pose[:2]-self.progress_position) > 0.10:
             self.progress_time = now
             self.last_real_progress = now
@@ -524,6 +584,7 @@ class Navigator:
                 "home_distance_m": float(np.linalg.norm(self.pose[:2])),
                 "return_plan_failure": self.return_plan_failure,
                 "return_route_kind": self.return_route_kind,
+                "waiting_for_obstacle": self.obstacle_wait_since is not None,
                 "mapped_m2": float(np.count_nonzero(self.grid.odds) * self.grid.resolution**2),
                 "distance_m": self.localization.distance,
                 "frontiers_reached": self.frontiers_reached,

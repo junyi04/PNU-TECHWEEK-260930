@@ -8,6 +8,29 @@ from perception import TargetTracker, ground_position, red_region
 
 
 class PerceptionTests(unittest.TestCase):
+    def test_continuous_range_drift_keeps_one_identity(self):
+        tracker = TargetTracker()
+        for i in range(8):
+            tracker.update([dict(position=[1+i*.18, 0], confidence=.9)], 1+i*.4)
+        self.assertEqual(len(tracker.tracks), 1)
+        self.assertEqual(len(tracker.confirmed), 1)
+
+    def test_overlapping_image_boxes_do_not_create_two_apples(self):
+        tracker = TargetTracker()
+        detections = [dict(position=[1, 0], confidence=.9, box=[10, 10, 50, 50]),
+                      dict(position=[1.5, 0], confidence=.8, box=[14, 14, 44, 44])]
+        for time in (1, 1.4, 1.8):
+            tracker.update(detections, time)
+        self.assertEqual(len(tracker.confirmed), 1)
+
+    def test_nearby_separate_apples_in_same_frame_stay_separate(self):
+        tracker = TargetTracker()
+        detections = [dict(position=[1, 0], confidence=.9, box=[10, 10, 40, 40]),
+                      dict(position=[1, .4], confidence=.8, box=[60, 10, 90, 40])]
+        for time in (1, 1.4, 1.8):
+            tracker.update(detections, time)
+        self.assertEqual(len(tracker.confirmed), 2)
+
     def test_colors(self):
         for color, accepted in [((0, 0, 220), True), ((0, 220, 0), False),
                                 ((200, 0, 180), False), ((0, 140, 255), False)]:

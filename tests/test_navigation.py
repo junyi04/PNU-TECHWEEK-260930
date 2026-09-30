@@ -11,6 +11,84 @@ spec.loader.exec_module(nav)
 
 
 class NavigationTests(unittest.TestCase):
+    def test_home_recovery_can_backtrack_away_from_home(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = False
+        robot.pose[:] = [2., 0., 0.]
+        start = robot.grid.cell(2, 0)
+        far = robot.grid.cell(3, 0)
+        robot.grid.safe[start[0], start[1]:far[1]+1] = True
+        robot.trace = [[0, 0], [3, 0], [2, 0]]
+        robot.plan_home(start)
+        self.assertEqual(robot.return_route_kind, 'recorded_backtrack')
+        self.assertEqual(robot.goal, far)
+        self.assertTrue(all(robot.grid.safe[p] for p in robot.path))
+        robot.plan_home(start)
+        self.assertEqual(robot.goal, far)
+
+    def test_observed_departing_obstacle_clears_but_wall_remains(self):
+        grid = nav.GridMap(size=100)
+        blocked = [math.inf]*360
+        blocked[180] = 1.
+        for _ in range(5):
+            grid.update(np.zeros(3), blocked, 3.5)
+        cell = grid.cell(.97, 0)
+        self.assertEqual(grid.odds[cell], 30)
+        for _ in range(2):
+            grid.update(np.zeros(3), [math.inf]*360, 3.5)
+        self.assertGreaterEqual(grid.odds[cell], 4)
+        grid.update(np.zeros(3), [math.inf]*360, 3.5)
+        self.assertTrue(grid.safe[cell])
+        for _ in range(10):
+            grid.update(np.zeros(3), blocked, 3.5)
+        self.assertFalse(grid.safe[cell])
+
+    def test_unobserved_and_occluded_obstacle_is_not_erased(self):
+        grid = nav.GridMap(size=100)
+        cell = grid.cell(.97, 0)
+        grid.odds[cell] = 30
+        for _ in range(10):
+            grid.update(np.zeros(3), [math.nan]*360, 3.5)
+        self.assertEqual(grid.odds[cell], 30)
+        for _ in range(10):
+            grid.update(np.zeros(3), [.4]*360, 3.5)
+        self.assertEqual(grid.odds[cell], 30)
+
+    def test_temporary_block_keeps_goal_then_resumes_for_all_modes(self):
+        for mode in ('EXPLORE', 'TARGET', 'RETURN'):
+            with self.subTest(mode=mode):
+                robot = nav.Navigator()
+                robot.grid.safe[:] = True
+                robot.pose[:] = [2., 0., math.pi]
+                robot.set_mode(mode, 0)
+                robot.target_xy = np.zeros(2)
+                robot.goal = robot.grid.cell(0, 0)
+                robot.path = nav.astar(robot.grid.safe, robot.grid.cell(2, 0), robot.goal)
+                original_goal = robot.goal
+                blocked_cell = robot.path[6]
+                robot.grid.safe[blocked_cell] = False
+                self.assertEqual(robot.command(1, [3.5]*360, 3.5), (0., 0.))
+                self.assertEqual(robot.reason, 'waiting_for_obstacle')
+                self.assertEqual(robot.goal, original_goal)
+                robot.grid.safe[blocked_cell] = True
+                command = robot.command(2, [3.5]*360, 3.5)
+                self.assertEqual(robot.goal, original_goal)
+                self.assertEqual(robot.reason, 'obstacle_cleared_resume')
+                self.assertGreater(command[0], 0)
+
+    def test_persistent_block_times_out_and_replans_without_crossing(self):
+        robot = nav.Navigator()
+        robot.grid.safe[:] = True
+        robot.go_to((2, 0), 0)
+        robot.path = nav.astar(robot.grid.safe, robot.grid.cell(0, 0), robot.goal)
+        blocked_cell = robot.path[6]
+        robot.grid.safe[blocked_cell] = False
+        robot.command(1, [3.5]*360, 3.5)
+        robot.command(4.1, [3.5]*360, 3.5)
+        self.assertIsNone(robot.obstacle_wait_since)
+        self.assertNotIn(blocked_cell, robot.path)
+        self.assertTrue(robot.path)
+
     def test_astar_cost_matches_dijkstra_reference(self):
         import networkx as nx
         rng = np.random.default_rng(73)

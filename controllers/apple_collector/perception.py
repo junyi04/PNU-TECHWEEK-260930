@@ -66,15 +66,31 @@ class TargetTracker:
         self.tracks = [t for t in self.tracks if t['id'] in confirmed_ids or timestamp-t['last'] < 3]
         used = set()
         points = []
+        boxes = []
         for d in sorted(detections, key=lambda d: -d['confidence']):
             xy = d.get('position')
             if xy is None or any(math.dist(xy, p) < .12 for p in points):
                 continue
+            box = d.get('box')
+            if box is not None:
+                def overlaps(old):
+                    intersection = max(0, min(box[2], old[2])-max(box[0], old[0])) * max(0, min(box[3], old[3])-max(box[1], old[1]))
+                    smaller = min((box[2]-box[0])*(box[3]-box[1]), (old[2]-old[0])*(old[3]-old[1]))
+                    return intersection/max(smaller, 1) > .65
+                if any(overlaps(old) for old in boxes):
+                    continue
+                boxes.append(box)
             points.append(xy)
-            candidates = [t for t in self.tracks if t['id'] not in used and math.dist(t['position'], xy) < .35]
+            # The smoothed location lags when range estimates change on approach.
+            # Associate against the last observation too, avoiding a fresh ID
+            # for the same continuously observed apple.
+            def association_distance(t):
+                return min(math.dist(t['position'], xy), math.dist(t.get('last_position', t['position']), xy))
+            candidates = [t for t in self.tracks if t['id'] not in used and association_distance(t) < .35]
             if candidates:
-                t = min(candidates, key=lambda t: math.dist(t['position'], xy))
-                t['position'] = [.75*a+.25*b for a, b in zip(t['position'], xy)]
+                t = min(candidates, key=association_distance)
+                weight = .65 if d.get('observed_distance', 999.) <= .55 else .25
+                t['position'] = [(1-weight)*a+weight*b for a, b in zip(t['position'], xy)]
                 t['hits'] += 1
                 t['last'] = timestamp
                 t['confidence'] = d['confidence']
@@ -86,6 +102,7 @@ class TargetTracker:
                          observed_distance=d.get('observed_distance', 999.))
                 self.next_id += 1
                 self.tracks.append(t)
+            t['last_position'] = list(xy)
             used.add(t['id'])
 
 

@@ -1,0 +1,87 @@
+{
+  "passed": false,
+  "checks": {
+    "mission_success": false,
+    "visited_both_physically": false,
+    "return_error": false,
+    "no_obstacle_contacts": false
+  },
+  "closest_m": [
+    0.43954708531063097,
+    0.3238108375716629
+  ],
+  "return_error_m": 1.175121792263106,
+  "contacts": 1,
+  "sim_time": 140.032,
+  "elapsed": 120.00000000000001,
+  "sample": {
+    "event": "sample",
+    "time": 139.776,
+    "state": "COVERAGE",
+    "scan": {
+      "front": 0.997796956903416,
+      "rear": 3.5,
+      "left": 3.5,
+      "right": 0.9471633093540015,
+      "around": 0.7834863153534841
+    },
+    "encoders": [
+      90.1808,
+      128.43856
+    ],
+    "wheels": [
+      3.7329570580917184,
+      3.5397702146355536
+    ],
+    "gyro": [
+      -0.00034098327813479113,
+      6.338720078544558e-06,
+      -0.039473907476543134
+    ],
+    "accel": [
+      0.09192385776108397,
+      -0.007494230793371656,
+      9.809568833319275
+    ],
+    "vision_status": "running",
+    "vision_device": "cpu",
+    "red_apples": 2,
+    "mission_state": "COVERAGE",
+    "mission_reason": "inspect_mapped_area",
+    "recovery_count": 0,
+    "scan_count": 2,
+    "visited_count": 1,
+    "visited": [
+      {
+        "id": 1,
+        "position": [
+          0.6567478831922204,
+          -0.20481137884380496
+        ],
+        "time": 39.872,
+        "source": "appearance_candidate",
+        "observed_distance": 0.507691204427817
+      }
+    ],
+    "active_target": null,
+    "pose": [
+      1.138679921076678,
+      0.013797744225018189,
+      0.8186038029590623
+    ],
+    "nav_mode": "TARGET",
+    "reason": "requested",
+    "home_distance_m": 1.1387635138205336,
+    "return_plan_failure": null,
+    "return_route_kind": null,
+    "waiting_for_obstacle": false,
+    "mapped_m2": 48.608000000000004,
+    "distance_m": 3.633538920000021,
+    "frontiers_reached": 0,
+    "scan_corrections": 0,
+    "goal": [
+      1.4800000000000004,
+      0.35999999999999943
+    ]
+  }
+}

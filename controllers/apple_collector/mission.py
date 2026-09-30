@@ -242,6 +242,9 @@ class Mission:
                     target['last'] not in self.verify_frames):
                 self.verify_frames.append(target['last'])
             if len(self.verify_frames) >= 3 and self.verify_frames[-1]-self.verify_frames[0] >= .3:
+                if not self.remaining([target]):
+                    self.abandon_target(now, 'already_visited_target')
+                    return 0., 0.
                 self.visited.append(dict(id=target['id'], position=target['position'], time=now,
                                          source=target.get('source'), observed_distance=target['observed_distance']))
                 self.active = None
